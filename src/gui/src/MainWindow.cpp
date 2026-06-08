@@ -141,7 +141,9 @@ MainWindow::MainWindow(QSettings& settings, AppConfig& appConfig) :
     connect(&m_IpcClient, SIGNAL(readLogLine(const QString&)), this, SLOT(appendLogRaw(const QString&)));
     connect(&m_IpcClient, SIGNAL(errorMessage(const QString&)), this, SLOT(appendLogError(const QString&)));
     connect(&m_IpcClient, SIGNAL(infoMessage(const QString&)), this, SLOT(appendLogInfo(const QString&)));
-    m_IpcClient.connectToHost();
+    if (appConfig().processMode() == Service) {
+        m_IpcClient.connectToHost();
+    }
 #endif
 
     // change default size based on os
