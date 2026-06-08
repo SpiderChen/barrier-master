@@ -173,8 +173,10 @@ convertToSharedPcm16(const UInt8* input, UINT32 frames, const WAVEFORMATEX* form
     const double inputFramesPerOutputFrame =
         static_cast<double>(format->nSamplesPerSec) /
         static_cast<double>(kSharedAudioSampleRate);
+    const double reservedFrameRatio =
+        inputFramesPerOutputFrame > 1.0 ? inputFramesPerOutputFrame : 1.0;
     output.reserve(static_cast<size_t>(
-        (frames / std::max(inputFramesPerOutputFrame, 1.0)) *
+        (frames / reservedFrameRatio) *
         kSharedAudioChannels * sizeof(SInt16)));
 
     for (UINT32 frameIndex = 0; frameIndex < frames; ++frameIndex) {
