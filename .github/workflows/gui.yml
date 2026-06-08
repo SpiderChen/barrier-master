@@ -104,7 +104,12 @@ jobs:
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=x64
-          clean_build.bat
+          if exist build rmdir /q /s build
+          mkdir build
+          cd build
+          cmake -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -DCMAKE_PREFIX_PATH="%QT_ROOT_DIR%" -DDNSSD_LIB="%BONJOUR_SDK_HOME%\Lib\x64\dnssd.lib" -DQT_VERSION=%QT_VERSION% -DBARRIER_BUILD_GUI=ON -DBARRIER_BUILD_INSTALLER=OFF -DBARRIER_BUILD_TESTS=OFF ..
+          cmake --build . --config %BUILD_TYPE% --target barrier -- /m:1 /verbosity:minimal /flp:logfile=barrier-msbuild.log;verbosity=normal
+          cmake --build . --config %BUILD_TYPE% --target barriers barrierc -- /m /verbosity:minimal
 
       - name: Package portable GUI
         shell: pwsh
@@ -125,6 +130,14 @@ jobs:
           }
 
           & (Join-Path $env:QT_ROOT_DIR "bin\windeployqt.exe") --release --no-translations --compiler-runtime (Join-Path $packageDir "barrier.exe")
+
+      - name: Upload Windows GUI build logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: barrier-windows-x64-gui-build-logs
+          path: build/*.log
+          if-no-files-found: ignore
 
       - name: Upload Windows GUI artifact
         uses: actions/upload-artifact@v7
