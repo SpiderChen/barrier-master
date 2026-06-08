@@ -118,6 +118,12 @@ jobs:
           New-Item -ItemType Directory -Force $packageDir | Out-Null
 
           Copy-Item "build\bin\Release\*" -Destination $packageDir -Recurse -Force
+          $barrierGui = Get-ChildItem -Path "build" -Recurse -Filter "barrier.exe" | Select-Object -First 1
+          if (-not $barrierGui) {
+            throw "barrier.exe was not found under the build directory"
+          }
+          Copy-Item $barrierGui.FullName -Destination $packageDir -Force
+
           if (Test-Path "res\openssl\barrier.conf") {
             Copy-Item "res\openssl\barrier.conf" -Destination $packageDir -Force
           }
