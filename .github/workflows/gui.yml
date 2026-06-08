@@ -176,6 +176,7 @@ jobs:
         env:
           B_BUILD_TYPE: Release
           BARRIER_BUILD_ENV: "1"
+          TERM: xterm
           B_CMAKE_FLAGS: >-
             -DBARRIER_BUILD_GUI=ON
             -DBARRIER_BUILD_INSTALLER=ON
