@@ -73,7 +73,12 @@ isPcmFormat(const WAVEFORMATEX* format)
 static SInt16
 clampSample(double sample)
 {
-    sample = std::max(-1.0, std::min(1.0, sample));
+    if (sample < -1.0) {
+        sample = -1.0;
+    }
+    else if (sample > 1.0) {
+        sample = 1.0;
+    }
     return static_cast<SInt16>(sample * 32767.0);
 }
 

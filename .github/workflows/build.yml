@@ -14,7 +14,6 @@ permissions:
 
 env:
   BUILD_TYPE: Release
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   windows:
@@ -23,7 +22,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           submodules: recursive
@@ -32,12 +31,28 @@ jobs:
         shell: bash
         run: bash .github/scripts/ensure-submodules.sh
 
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          choco install openssl --no-progress -y
+
       - name: Configure build environment
         shell: pwsh
         run: |
+          $opensslRoot = @(
+            "${env:ProgramFiles}\OpenSSL-Win64",
+            "${env:ProgramFiles}\OpenSSL",
+            "${env:ProgramFiles(x86)}\OpenSSL-Win32"
+          ) | Where-Object { Test-Path (Join-Path $_ "include\openssl\ssl.h") } | Select-Object -First 1
+
+          if (-not $opensslRoot) {
+            throw "OpenSSL installation was not found."
+          }
+
           @"
           set B_BUILD_TYPE=$env:BUILD_TYPE
           set B_COPY_RUNTIME_DEPS=0
+          set OPENSSL_ROOT=$opensslRoot
           set B_CMAKE_FLAGS=-DBARRIER_BUILD_GUI=OFF -DBARRIER_BUILD_INSTALLER=OFF -DBARRIER_BUILD_TESTS=OFF
           "@ | Set-Content -Encoding ASCII build_env.bat
 
@@ -48,7 +63,7 @@ jobs:
           clean_build.bat
 
       - name: Upload Windows binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: barrier-windows-x64-cli
           path: build/bin/Release
@@ -59,7 +74,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           submodules: recursive
@@ -80,7 +95,7 @@ jobs:
         run: sh -x ./clean_build.sh
 
       - name: Upload macOS binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: barrier-macos-intel-cli
           path: build/bin
@@ -91,7 +106,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           submodules: recursive
@@ -120,7 +135,7 @@ jobs:
         run: sh -x ./clean_build.sh
 
       - name: Upload Linux binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: barrier-linux-x64-cli
           path: build/bin

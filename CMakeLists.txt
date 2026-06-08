@@ -146,6 +146,7 @@ if (UNIX)
         find_library (lib_ApplicationServices ApplicationServices)
         find_library (lib_Foundation Foundation)
         find_library (lib_Carbon Carbon)
+        find_library (lib_AudioToolbox AudioToolbox)
 
         list (APPEND libs
             ${lib_ScreenSaver}
@@ -153,6 +154,7 @@ if (UNIX)
             ${lib_ApplicationServices}
             ${lib_Foundation}
             ${lib_Carbon}
+            ${lib_AudioToolbox}
         )
 
     else() # not-apple
@@ -308,18 +310,50 @@ include_directories("${CMAKE_SOURCE_DIR}/ext/gulrak-filesystem/include")
 # OpenSSL
 #
 if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
-    set (OPENSSL_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/ext/openssl/windows)
-    if (CMAKE_SIZEOF_VOID_P EQUAL 8)
-        set (OPENSSL_ROOT "${OPENSSL_ROOT}/x64")
-    else()
-        set (OPENSSL_ROOT "${OPENSSL_ROOT}/x86")
+    if (NOT OPENSSL_ROOT)
+        if (DEFINED ENV{OPENSSL_ROOT} AND NOT "$ENV{OPENSSL_ROOT}" STREQUAL "")
+            set (OPENSSL_ROOT "$ENV{OPENSSL_ROOT}")
+        else()
+            set (OPENSSL_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/ext/openssl/windows)
+            if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+                set (OPENSSL_ROOT "${OPENSSL_ROOT}/x64")
+            else()
+                set (OPENSSL_ROOT "${OPENSSL_ROOT}/x86")
+            endif()
+        endif()
     endif()
+    file (TO_CMAKE_PATH "${OPENSSL_ROOT}" OPENSSL_ROOT)
 
-    include_directories (BEFORE SYSTEM ${OPENSSL_ROOT}/include)
-    set (OPENSSL_LIBS
-        ${OPENSSL_ROOT}/lib/libeay32.lib
-        ${OPENSSL_ROOT}/lib/ssleay32.lib
+    include_directories (BEFORE SYSTEM "${OPENSSL_ROOT}/include")
+    set (OPENSSL_LIB_DIRS
+        "${OPENSSL_ROOT}/lib"
+        "${OPENSSL_ROOT}/lib/VC/x64/MD"
+        "${OPENSSL_ROOT}/lib/VC/Win64/MD"
     )
+
+    foreach (OPENSSL_LIB_DIR ${OPENSSL_LIB_DIRS})
+        if (NOT OPENSSL_LIBS AND
+            EXISTS "${OPENSSL_LIB_DIR}/libssl.lib" AND
+            EXISTS "${OPENSSL_LIB_DIR}/libcrypto.lib")
+            set (OPENSSL_LIBS
+                "${OPENSSL_LIB_DIR}/libssl.lib"
+                "${OPENSSL_LIB_DIR}/libcrypto.lib"
+            )
+        endif()
+
+        if (NOT OPENSSL_LIBS AND
+            EXISTS "${OPENSSL_LIB_DIR}/ssleay32.lib" AND
+            EXISTS "${OPENSSL_LIB_DIR}/libeay32.lib")
+            set (OPENSSL_LIBS
+                "${OPENSSL_LIB_DIR}/libeay32.lib"
+                "${OPENSSL_LIB_DIR}/ssleay32.lib"
+            )
+        endif()
+    endforeach()
+
+    if (NOT OPENSSL_LIBS)
+        message (FATAL_ERROR "OpenSSL libraries not found under ${OPENSSL_ROOT}")
+    endif()
 elseif (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     find_program(APT_PROGRAM "apt")
     find_program(BREW_PROGRAM "brew")
