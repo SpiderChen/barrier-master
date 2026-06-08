@@ -59,6 +59,7 @@ AppConfig::AppConfig(QSettings* settings) :
     m_ElevateMode(defaultElevateMode),
     m_AutoConfigPrompted(false),
     m_CryptoEnabled(false),
+    m_AudioEnabled(false),
     m_AutoHide(false),
     m_AutoStart(false),
     m_MinimizeToTray(false)
@@ -160,6 +161,7 @@ void AppConfig::loadSettings()
     m_CryptoEnabled = settings().value("cryptoEnabled", true).toBool();
     // TODO: set default value of requireClientCertificate to true on Barrier 2.5.0
     m_RequireClientCertificate = settings().value("requireClientCertificate", false).toBool();
+    m_AudioEnabled = settings().value("audioEnabled", false).toBool();
     m_AutoHide = settings().value("autoHide", false).toBool();
     m_AutoStart = settings().value("autoStart", false).toBool();
     m_MinimizeToTray = settings().value("minimizeToTray", false).toBool();
@@ -184,6 +186,7 @@ void AppConfig::saveSettings()
     settings().setValue("autoConfigPrompted", m_AutoConfigPrompted);
     settings().setValue("cryptoEnabled", m_CryptoEnabled);
     settings().setValue("requireClientCertificate", m_RequireClientCertificate);
+    settings().setValue("audioEnabled", m_AudioEnabled);
     settings().setValue("autoHide", m_AutoHide);
     settings().setValue("autoStart", m_AutoStart);
     settings().setValue("minimizeToTray", m_MinimizeToTray);
@@ -231,6 +234,10 @@ bool AppConfig::getCryptoEnabled() const { return m_CryptoEnabled; }
 void AppConfig::setRequireClientCertificate(bool e) { m_RequireClientCertificate = e; }
 
 bool AppConfig::getRequireClientCertificate() const { return m_RequireClientCertificate; }
+
+void AppConfig::setAudioEnabled(bool e) { m_AudioEnabled = e; }
+
+bool AppConfig::getAudioEnabled() const { return m_AudioEnabled; }
 
 void AppConfig::setAutoHide(bool b) { m_AutoHide = b; }
 

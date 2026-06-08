@@ -94,6 +94,9 @@ class AppConfig: public QObject
         void setRequireClientCertificate(bool e);
         bool getRequireClientCertificate() const;
 
+        void setAudioEnabled(bool e);
+        bool getAudioEnabled() const;
+
         void setAutoHide(bool b);
         bool getAutoHide();
 
@@ -136,6 +139,7 @@ protected:
         bool m_AutoConfigPrompted;
         bool m_CryptoEnabled;
         bool m_RequireClientCertificate = false;
+        bool m_AudioEnabled;
         bool m_AutoHide;
         bool m_AutoStart;
         bool m_MinimizeToTray;

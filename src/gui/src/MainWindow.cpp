@@ -548,6 +548,10 @@ void MainWindow::startBarrier()
 
 #endif
 
+    if (m_AppConfig->getAudioEnabled()) {
+        args << "--enable-audio";
+    }
+
     if (!m_AppConfig->getCryptoEnabled()) {
         args << "--disable-crypto";
     }
