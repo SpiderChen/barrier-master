@@ -45,6 +45,7 @@ jobs:
         shell: pwsh
         run: |
           choco install openssl --no-progress -y
+          choco install ninja --no-progress -y
 
           $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
           if (-not $vcpkgRoot -or -not (Test-Path (Join-Path $vcpkgRoot "vcpkg.exe"))) {
@@ -107,9 +108,8 @@ jobs:
           if exist build rmdir /q /s build
           mkdir build
           cd build
-          cmake -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -DCMAKE_PREFIX_PATH="%QT_ROOT_DIR%" -DDNSSD_LIB="%BONJOUR_SDK_HOME%\Lib\x64\dnssd.lib" -DQT_VERSION=%QT_VERSION% -DBARRIER_BUILD_GUI=ON -DBARRIER_BUILD_INSTALLER=OFF -DBARRIER_BUILD_TESTS=OFF ..
-          MSBuild.exe src\gui\barrier.vcxproj /p:Configuration=%BUILD_TYPE%;Platform=x64 /m:1 /verbosity:minimal /flp:logfile=barrier-msbuild.log;verbosity=normal
-          cmake --build . --config %BUILD_TYPE% --target barriers barrierc -- /m /verbosity:minimal
+          cmake -G Ninja -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -DCMAKE_PREFIX_PATH="%QT_ROOT_DIR%" -DDNSSD_LIB="%BONJOUR_SDK_HOME%\Lib\x64\dnssd.lib" -DQT_VERSION=%QT_VERSION% -DBARRIER_BUILD_GUI=ON -DBARRIER_BUILD_INSTALLER=OFF -DBARRIER_BUILD_TESTS=OFF ..
+          cmake --build . --target barrier barriers barrierc
 
       - name: Package portable GUI
         shell: pwsh
@@ -117,7 +117,10 @@ jobs:
           $packageDir = Join-Path $env:GITHUB_WORKSPACE "artifacts\barrier-windows-x64-gui"
           New-Item -ItemType Directory -Force $packageDir | Out-Null
 
-          Copy-Item "build\bin\Release\*" -Destination $packageDir -Recurse -Force
+          @("build\bin\Release", "build\bin") |
+            Where-Object { Test-Path $_ } |
+            ForEach-Object { Copy-Item (Join-Path $_ "*") -Destination $packageDir -Recurse -Force }
+
           $barrierGui = Get-ChildItem -Path "build" -Recurse -Filter "barrier.exe" | Select-Object -First 1
           if (-not $barrierGui) {
             Get-ChildItem -Path "build" -Recurse -Filter "*.exe" |
