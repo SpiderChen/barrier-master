@@ -151,9 +151,11 @@ jobs:
         run: |
           brew update
           brew install pkg-config openssl@3
-          python3 -m pip install --upgrade pip
-          python3 -m pip install "aqtinstall==${AQT_VERSION}"
-          python3 -m aqt install-qt mac desktop "${QT_VERSION}" clang_64 -O "$PWD/Qt"
+          python3 -m venv "$PWD/.venv-aqt"
+          . "$PWD/.venv-aqt/bin/activate"
+          python -m pip install --upgrade pip
+          python -m pip install "aqtinstall==${AQT_VERSION}"
+          python -m aqt install-qt mac desktop "${QT_VERSION}" clang_64 -O "$PWD/Qt"
           echo "QT_ROOT_DIR=$PWD/Qt/${QT_VERSION}/clang_64" >> "$GITHUB_ENV"
           echo "MACDEPLOYQT=$PWD/Qt/${QT_VERSION}/clang_64/bin/macdeployqt" >> "$GITHUB_ENV"
 
