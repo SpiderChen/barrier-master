@@ -14,6 +14,7 @@ permissions:
 
 env:
   BUILD_TYPE: Release
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   windows:
@@ -29,7 +30,7 @@ jobs:
 
       - name: Ensure source dependencies
         shell: bash
-        run: .github/scripts/ensure-submodules.sh
+        run: bash .github/scripts/ensure-submodules.sh
 
       - name: Configure build environment
         shell: pwsh
@@ -64,7 +65,7 @@ jobs:
           submodules: recursive
 
       - name: Ensure source dependencies
-        run: .github/scripts/ensure-submodules.sh
+        run: bash .github/scripts/ensure-submodules.sh
 
       - name: Install dependencies
         run: |
@@ -96,7 +97,7 @@ jobs:
           submodules: recursive
 
       - name: Ensure source dependencies
-        run: .github/scripts/ensure-submodules.sh
+        run: bash .github/scripts/ensure-submodules.sh
 
       - name: Install dependencies
         run: |
