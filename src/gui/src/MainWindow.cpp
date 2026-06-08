@@ -141,7 +141,7 @@ MainWindow::MainWindow(QSettings& settings, AppConfig& appConfig) :
     connect(&m_IpcClient, SIGNAL(readLogLine(const QString&)), this, SLOT(appendLogRaw(const QString&)));
     connect(&m_IpcClient, SIGNAL(errorMessage(const QString&)), this, SLOT(appendLogError(const QString&)));
     connect(&m_IpcClient, SIGNAL(infoMessage(const QString&)), this, SLOT(appendLogInfo(const QString&)));
-    if (appConfig().processMode() == Service) {
+    if (appConfig.processMode() == Service) {
         m_IpcClient.connectToHost();
     }
 #endif
