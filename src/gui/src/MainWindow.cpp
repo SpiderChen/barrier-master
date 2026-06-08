@@ -560,6 +560,7 @@ void MainWindow::startBarrier()
 
     if (m_AppConfig->getAudioEnabled()) {
         args << "--enable-audio";
+        args << "--audio-quality" << m_AppConfig->getAudioQuality();
     }
 
     if (!m_AppConfig->getCryptoEnabled()) {

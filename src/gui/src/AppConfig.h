@@ -96,6 +96,8 @@ class AppConfig: public QObject
 
         void setAudioEnabled(bool e);
         bool getAudioEnabled() const;
+        void setAudioQuality(const QString& quality);
+        const QString& getAudioQuality() const;
 
         void setAutoHide(bool b);
         bool getAutoHide();
@@ -140,6 +142,7 @@ protected:
         bool m_CryptoEnabled;
         bool m_RequireClientCertificate = false;
         bool m_AudioEnabled;
+        QString m_AudioQuality;
         bool m_AutoHide;
         bool m_AutoStart;
         bool m_MinimizeToTray;

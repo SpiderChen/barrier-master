@@ -21,6 +21,7 @@
 #include "barrier/ProtocolUtil.h"
 #include "barrier/StreamChunker.h"
 #include "barrier/ClipboardChunk.h"
+#include "barrier/FileClipboard.h"
 #include "io/IStream.h"
 #include "base/TMethodEventJob.h"
 #include "base/Log.h"
@@ -53,7 +54,7 @@ ClientProxy1_6::setClipboard(ClipboardID id, const IClipboard* clipboard)
         m_clipboard[id].m_dirty = false;
         Clipboard::copy(&m_clipboard[id].m_clipboard, clipboard);
 
-        std::string data = m_clipboard[id].m_clipboard.marshall();
+        std::string data = FileClipboard::marshallWithoutFiles(&m_clipboard[id].m_clipboard);
 
         size_t size = data.size();
         LOG((CLOG_DEBUG "sending clipboard %d to \"%s\"", id, getName().c_str()));

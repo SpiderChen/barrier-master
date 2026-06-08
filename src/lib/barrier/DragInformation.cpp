@@ -37,40 +37,39 @@ DragInformation::parseDragInfo(DragFileList& dragFileList, UInt32 fileNum, Strin
     size_t findResult1 = 0;
     size_t findResult2 = 0;
     dragFileList.clear();
-    String slash("\\");
-    if (data.find("/", startPos) != string::npos) {
-        slash = "/";
-    }
 
     UInt32 index = 0;
     while (index < fileNum) {
         findResult1 = data.find(',', startPos);
-        findResult2 = data.find_last_of(slash, findResult1);
+        if (findResult1 == string::npos || findResult1 == startPos) {
+            break;
+        }
 
-        if (findResult1 == startPos) {
-            //TODO: file number does not match, something goes wrong
+        findResult2 = data.find_last_of("/\\", findResult1);
+
+        size_t filenameStart = findResult2 == string::npos ? startPos : findResult2 + 1;
+        String filename = data.substr(filenameStart, findResult1 - filenameStart);
+        if (filename.empty()) {
             break;
         }
 
         // set filename
-        if (findResult1 - findResult2 > 1) {
-            String filename = data.substr(findResult2 + 1,
-                findResult1 - findResult2 - 1);
-            DragInformation di;
-            di.setFilename(filename);
-            dragFileList.push_back(di);
-        }
+        DragInformation di;
+        di.setFilename(filename);
+        dragFileList.push_back(di);
         startPos = findResult1 + 1;
 
         //set filesize
         findResult2 = data.find(',', startPos);
-        if (findResult2 - findResult1 > 1) {
-            String filesize = data.substr(findResult1 + 1,
-                                           findResult2 - findResult1 - 1);
-            size_t size = stringToNum(filesize);
-            dragFileList.at(index).setFilesize(size);
+        if (findResult2 == string::npos || findResult2 == startPos) {
+            dragFileList.pop_back();
+            break;
         }
-        startPos = findResult1 + 1;
+
+        String filesize = data.substr(startPos, findResult2 - startPos);
+        size_t size = stringToNum(filesize);
+        dragFileList.at(index).setFilesize(size);
+        startPos = findResult2 + 1;
 
         ++index;
     }

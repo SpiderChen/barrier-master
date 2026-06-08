@@ -47,6 +47,14 @@ static const char* logLevelNames[] =
     "DEBUG2"
 };
 
+static QString normalizeAudioQuality(const QString& quality)
+{
+    if (quality == "medium" || quality == "high") {
+        return quality;
+    }
+    return "low";
+}
+
 AppConfig::AppConfig(QSettings* settings) :
     m_pSettings(settings),
     m_ScreenName(),
@@ -60,6 +68,7 @@ AppConfig::AppConfig(QSettings* settings) :
     m_AutoConfigPrompted(false),
     m_CryptoEnabled(false),
     m_AudioEnabled(false),
+    m_AudioQuality("low"),
     m_AutoHide(false),
     m_AutoStart(false),
     m_MinimizeToTray(false)
@@ -162,6 +171,7 @@ void AppConfig::loadSettings()
     // TODO: set default value of requireClientCertificate to true on Barrier 2.5.0
     m_RequireClientCertificate = settings().value("requireClientCertificate", false).toBool();
     m_AudioEnabled = settings().value("audioEnabled", false).toBool();
+    m_AudioQuality = normalizeAudioQuality(settings().value("audioQuality", "low").toString());
     m_AutoHide = settings().value("autoHide", false).toBool();
     m_AutoStart = settings().value("autoStart", false).toBool();
     m_MinimizeToTray = settings().value("minimizeToTray", false).toBool();
@@ -187,6 +197,7 @@ void AppConfig::saveSettings()
     settings().setValue("cryptoEnabled", m_CryptoEnabled);
     settings().setValue("requireClientCertificate", m_RequireClientCertificate);
     settings().setValue("audioEnabled", m_AudioEnabled);
+    settings().setValue("audioQuality", m_AudioQuality);
     settings().setValue("autoHide", m_AutoHide);
     settings().setValue("autoStart", m_AutoStart);
     settings().setValue("minimizeToTray", m_MinimizeToTray);
@@ -238,6 +249,10 @@ bool AppConfig::getRequireClientCertificate() const { return m_RequireClientCert
 void AppConfig::setAudioEnabled(bool e) { m_AudioEnabled = e; }
 
 bool AppConfig::getAudioEnabled() const { return m_AudioEnabled; }
+
+void AppConfig::setAudioQuality(const QString& quality) { m_AudioQuality = normalizeAudioQuality(quality); }
+
+const QString& AppConfig::getAudioQuality() const { return m_AudioQuality; }
 
 void AppConfig::setAutoHide(bool b) { m_AutoHide = b; }
 

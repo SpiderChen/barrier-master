@@ -40,6 +40,7 @@ public:
     bool                m_enableIpc;
     bool                m_enableDragDrop;
     bool                m_enableAudio;
+    String              m_audioQuality;
     String              m_dropTarget;
 #if SYSAPI_WIN32
     bool                m_debugServiceWait;

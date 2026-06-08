@@ -15,10 +15,13 @@
 
 typedef std::vector<String> FilePathList;
 
+class IClipboard;
+
 class FileClipboard {
 public:
     static FilePathList split(const String& data);
     static String join(const FilePathList& paths);
+    static String marshallWithoutFiles(const IClipboard* clipboard);
     static UInt32 setupTransferInfo(const FilePathList& paths,
                                     FilePathList& transferablePaths,
                                     String& output);

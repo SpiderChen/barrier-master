@@ -29,6 +29,7 @@
 #include "base/Log.h"
 #include "base/Stopwatch.h"
 #include "base/String.h"
+#include "io/filesystem.h"
 
 #include <fstream>
 #include <stdexcept>
@@ -48,10 +49,11 @@ StreamChunker::sendFile(const char* filename,
 {
     s_isChunkingFile = true;
 
-    std::fstream file(filename, std::ios::in | std::ios::binary);
+    std::fstream file;
+    barrier::open_utf8_path(file, filename, std::ios::in | std::ios::binary);
 
     if (!file.is_open()) {
-        throw runtime_error("failed to open file");
+        throw runtime_error("failed to open file: " + String(filename));
     }
 
     // check file size

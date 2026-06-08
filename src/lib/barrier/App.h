@@ -167,6 +167,7 @@ private:
     "      --no-tray            disable the system tray icon.\n" \
     "      --enable-drag-drop   enable file drag & drop and copy/paste.\n" \
     "      --enable-audio       enable server audio sharing.\n" \
+    "      --audio-quality <q> audio quality: low, medium, or high.\n" \
     "      --enable-crypto      enable the crypto (ssl) plugin (default, deprecated).\n" \
     "      --disable-crypto     disable the crypto (ssl) plugin.\n" \
     "      --profile-dir <path> use named profile directory instead.\n" \

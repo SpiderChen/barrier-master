@@ -283,6 +283,9 @@ ArgParser::parseGenericArgs(int argc, const char* const* argv, int& i)
     else if (isArg(i, argc, argv, NULL, "--enable-audio")) {
         argsBase().m_enableAudio = true;
     }
+    else if (isArg(i, argc, argv, NULL, "--audio-quality", 1)) {
+        argsBase().m_audioQuality = argv[++i];
+    }
     else if (isArg(i, argc, argv, NULL, "--drop-dir")) {
         argsBase().m_dropTarget = argv[++i];
     }

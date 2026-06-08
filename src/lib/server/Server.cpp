@@ -2551,7 +2551,7 @@ Server::startAudioStream()
 
 	++m_audioSession;
 	m_audioSource = new AudioSource();
-	if (!m_audioSource->start(&Server::audio_chunk_callback, this)) {
+	if (!m_audioSource->start(&Server::audio_chunk_callback, this, m_args.m_audioQuality)) {
 		delete m_audioSource;
 		m_audioSource = NULL;
 	}

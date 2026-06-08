@@ -212,6 +212,20 @@
         </property>
        </widget>
       </item>
+      <item row="5" column="0">
+       <widget class="QLabel" name="m_pLabelAudioQuality">
+        <property name="text">
+         <string>Audio quality:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="1">
+       <widget class="QComboBox" name="m_pComboAudioQuality">
+        <property name="toolTip">
+         <string>Higher quality uses more network bandwidth.</string>
+        </property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>
@@ -352,6 +366,7 @@
   <tabstop>m_pCheckBoxEnableCrypto</tabstop>
   <tabstop>checkbox_require_client_certificate</tabstop>
   <tabstop>m_pCheckBoxEnableAudio</tabstop>
+  <tabstop>m_pComboAudioQuality</tabstop>
   <tabstop>m_pComboLogLevel</tabstop>
   <tabstop>m_pCheckBoxLogToFile</tabstop>
   <tabstop>m_pLineEditLogFilename</tabstop>

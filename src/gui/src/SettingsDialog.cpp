@@ -53,6 +53,14 @@ SettingsDialog::SettingsDialog(QWidget* parent, AppConfig& config) :
     m_pCheckBoxEnableCrypto->setChecked(m_appConfig.getCryptoEnabled());
     checkbox_require_client_certificate->setChecked(m_appConfig.getRequireClientCertificate());
     m_pCheckBoxEnableAudio->setChecked(m_appConfig.getAudioEnabled());
+    m_pComboAudioQuality->clear();
+    m_pComboAudioQuality->addItem(tr("Low - 16 kHz mono (least bandwidth)"), "low");
+    m_pComboAudioQuality->addItem(tr("Medium - 32 kHz stereo"), "medium");
+    m_pComboAudioQuality->addItem(tr("High - 48 kHz stereo (best quality)"), "high");
+    setIndexFromItemData(m_pComboAudioQuality, m_appConfig.getAudioQuality());
+    if (m_pComboAudioQuality->currentIndex() < 0) {
+        m_pComboAudioQuality->setCurrentIndex(0);
+    }
 
 #if defined(Q_OS_WIN)
     m_pComboElevate->setCurrentIndex(static_cast<int>(appConfig().elevateMode()));
@@ -71,6 +79,7 @@ void SettingsDialog::accept()
     m_appConfig.setCryptoEnabled(m_pCheckBoxEnableCrypto->isChecked());
     m_appConfig.setRequireClientCertificate(checkbox_require_client_certificate->isChecked());
     m_appConfig.setAudioEnabled(m_pCheckBoxEnableAudio->isChecked());
+    m_appConfig.setAudioQuality(m_pComboAudioQuality->itemData(m_pComboAudioQuality->currentIndex()).toString());
     m_appConfig.setLogLevel(m_pComboLogLevel->currentIndex());
     m_appConfig.setLogToFile(m_pCheckBoxLogToFile->isChecked());
     m_appConfig.setLogFilename(m_pLineEditLogFilename->text());

@@ -9,6 +9,7 @@
 
 #include "barrier/FileClipboard.h"
 
+#include "barrier/Clipboard.h"
 #include "base/Log.h"
 #include "io/filesystem.h"
 
@@ -46,6 +47,31 @@ FileClipboard::join(const FilePathList& paths)
         data.append(*index);
     }
     return data;
+}
+
+String
+FileClipboard::marshallWithoutFiles(const IClipboard* clipboard)
+{
+    Clipboard filtered;
+    if (clipboard == NULL || !clipboard->open(0)) {
+        return filtered.marshall();
+    }
+
+    if (filtered.open(clipboard->getTime())) {
+        filtered.empty();
+        for (UInt32 format = 0; format != IClipboard::kNumFormats; ++format) {
+            IClipboard::EFormat clipboardFormat =
+                static_cast<IClipboard::EFormat>(format);
+            if (clipboardFormat != IClipboard::kFiles &&
+                clipboard->has(clipboardFormat)) {
+                filtered.add(clipboardFormat, clipboard->get(clipboardFormat));
+            }
+        }
+        filtered.close();
+    }
+    clipboard->close();
+
+    return filtered.marshall();
 }
 
 UInt32

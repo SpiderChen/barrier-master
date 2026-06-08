@@ -20,6 +20,61 @@
 #include <cstring>
 #include <vector>
 
+namespace {
+
+struct AudioQualityProfile {
+    const char* m_name;
+    UInt32 m_sampleRate;
+    UInt16 m_channels;
+};
+
+static const UInt16 kSharedAudioBitsPerSample = 16;
+
+static const AudioQualityProfile kAudioQualityProfiles[] = {
+    { "low", 16000, 1 },
+    { "medium", 32000, 2 },
+    { "high", 48000, 2 }
+};
+
+static const AudioQualityProfile&
+defaultAudioQualityProfile()
+{
+    return kAudioQualityProfiles[0];
+}
+
+static const AudioQualityProfile&
+audioQualityProfile(const String& quality)
+{
+    for (size_t index = 0; index < sizeof(kAudioQualityProfiles) / sizeof(kAudioQualityProfiles[0]); ++index) {
+        if (quality == kAudioQualityProfiles[index].m_name) {
+            return kAudioQualityProfiles[index];
+        }
+    }
+
+    if (!quality.empty()) {
+        LOG((CLOG_INFO "unknown audio quality '%s', using low", quality.c_str()));
+    }
+    return defaultAudioQualityProfile();
+}
+
+static AudioFormat
+audioFormatForQuality(const String& quality)
+{
+    const AudioQualityProfile& profile = audioQualityProfile(quality);
+    return AudioFormat(profile.m_sampleRate, profile.m_channels,
+                       kSharedAudioBitsPerSample);
+}
+
+static size_t
+audioPacketBytes(const AudioFormat& format)
+{
+    return static_cast<size_t>(format.m_sampleRate) *
+           static_cast<size_t>(format.m_channels) *
+           static_cast<size_t>(format.m_bitsPerSample / 8) / 10;
+}
+
+} // namespace
+
 #if SYSAPI_WIN32
 
 #ifndef NOMINMAX
@@ -35,13 +90,6 @@ static const GUID kAudioPcmGuid =
     {0x00000001, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
 static const GUID kAudioFloatGuid =
     {0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
-static const UInt32 kSharedAudioSampleRate = 16000;
-static const UInt16 kSharedAudioChannels = 1;
-static const UInt16 kSharedAudioBitsPerSample = 16;
-static const size_t kSharedAudioPacketBytes =
-    kSharedAudioSampleRate * kSharedAudioChannels *
-    (kSharedAudioBitsPerSample / 8) / 10;
-
 static bool
 guidEquals(const GUID& left, const GUID& right)
 {
@@ -161,29 +209,56 @@ readMonoSample(const UInt8* frame, const WAVEFORMATEX* format, bool silent)
 }
 
 static void
+writeSharedFrame(std::vector<UInt8>& output, const UInt8* frame,
+                 const WAVEFORMATEX* format, UInt16 outputChannels)
+{
+    if (outputChannels <= 1) {
+        writeInt16(output, readMonoSample(frame, format, false));
+        return;
+    }
+
+    if (format->nChannels == 0) {
+        for (UInt16 channel = 0; channel < outputChannels; ++channel) {
+            writeInt16(output, 0);
+        }
+        return;
+    }
+
+    for (UInt16 channel = 0; channel < outputChannels; ++channel) {
+        UInt16 inputChannel = channel;
+        if (inputChannel >= format->nChannels) {
+            inputChannel = static_cast<UInt16>(format->nChannels - 1);
+        }
+        writeInt16(output, readChannelSample(frame, format, inputChannel));
+    }
+}
+
+static void
 convertToSharedPcm16(const UInt8* input, UINT32 frames, const WAVEFORMATEX* format,
-                     double& nextOutputFrame, std::vector<UInt8>& output,
-                     bool silent)
+                     const AudioFormat& outputFormat, double& nextOutputFrame,
+                     std::vector<UInt8>& output, bool silent)
 {
     output.clear();
-    if (format->nSamplesPerSec == 0 || format->nBlockAlign == 0) {
+    if (format->nSamplesPerSec == 0 || format->nBlockAlign == 0 ||
+        outputFormat.m_sampleRate == 0 || outputFormat.m_channels == 0 ||
+        outputFormat.m_bitsPerSample != 16) {
         return;
     }
 
     const double inputFramesPerOutputFrame =
         static_cast<double>(format->nSamplesPerSec) /
-        static_cast<double>(kSharedAudioSampleRate);
-    const double reservedFrameRatio =
-        inputFramesPerOutputFrame > 1.0 ? inputFramesPerOutputFrame : 1.0;
-    output.reserve(static_cast<size_t>(
-        (frames / reservedFrameRatio) *
-        kSharedAudioChannels * sizeof(SInt16)));
+        static_cast<double>(outputFormat.m_sampleRate);
+    const double estimatedOutputFrames =
+        inputFramesPerOutputFrame > 0.0 ?
+        static_cast<double>(frames) / inputFramesPerOutputFrame : 0.0;
+    output.reserve(static_cast<size_t>(estimatedOutputFrames + 1.0) *
+                   outputFormat.m_channels * sizeof(SInt16));
 
     for (UINT32 frameIndex = 0; frameIndex < frames; ++frameIndex) {
         const UInt8* frame = input + frameIndex * format->nBlockAlign;
         while (nextOutputFrame <= frameIndex) {
             if (!silent) {
-                writeInt16(output, readMonoSample(frame, format, silent));
+                writeSharedFrame(output, frame, format, outputFormat.m_channels);
             }
             nextOutputFrame += inputFramesPerOutputFrame;
         }
@@ -204,7 +279,8 @@ public:
         m_running(false),
         m_stop(false),
         m_callback(NULL),
-        m_context(NULL)
+        m_context(NULL),
+        m_outputFormat(audioFormatForQuality(""))
     {
     }
 
@@ -213,7 +289,7 @@ public:
         stop();
     }
 
-    bool start(AudioSource::ChunkCallback callback, void* context)
+    bool start(AudioSource::ChunkCallback callback, void* context, const String& quality)
     {
         if (m_running) {
             return true;
@@ -221,6 +297,13 @@ public:
         if (callback == NULL) {
             return false;
         }
+
+        const AudioQualityProfile& profile = audioQualityProfile(quality);
+        m_outputFormat = AudioFormat(profile.m_sampleRate, profile.m_channels,
+                                     kSharedAudioBitsPerSample);
+        LOG((CLOG_INFO "server audio sharing quality: %s (%u Hz, %u channels, %u-bit)",
+             profile.m_name, m_outputFormat.m_sampleRate, m_outputFormat.m_channels,
+             m_outputFormat.m_bitsPerSample));
 
         m_callback = callback;
         m_context = context;
@@ -340,10 +423,9 @@ private:
                 break;
             }
 
-            AudioFormat outputFormat(kSharedAudioSampleRate, kSharedAudioChannels,
-                                     kSharedAudioBitsPerSample);
+            AudioFormat outputFormat = m_outputFormat;
             m_callback(AudioChunk::start(outputFormat), m_context);
-            captureLoop(captureClient, mixFormat);
+            captureLoop(captureClient, mixFormat, outputFormat);
             m_callback(AudioChunk::end(), m_context);
             audioClient->Stop();
         } while (false);
@@ -369,8 +451,14 @@ private:
         m_running = false;
     }
 
-    void captureLoop(IAudioCaptureClient* captureClient, const WAVEFORMATEX* mixFormat)
+    void captureLoop(IAudioCaptureClient* captureClient, const WAVEFORMATEX* mixFormat,
+                     const AudioFormat& outputFormat)
     {
+        const size_t packetBytes = audioPacketBytes(outputFormat);
+        if (packetBytes == 0) {
+            return;
+        }
+
         std::vector<UInt8> output;
         std::vector<UInt8> pendingOutput;
         double nextOutputFrame = 0.0;
@@ -400,16 +488,16 @@ private:
                 }
 
                 bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
-                convertToSharedPcm16(data, framesAvailable, mixFormat,
+                convertToSharedPcm16(data, framesAvailable, mixFormat, outputFormat,
                                      nextOutputFrame, output, silent);
                 if (!output.empty()) {
                     pendingOutput.insert(pendingOutput.end(), output.begin(), output.end());
-                    while (pendingOutput.size() >= kSharedAudioPacketBytes && !m_stop) {
+                    while (pendingOutput.size() >= packetBytes && !m_stop) {
                         m_callback(AudioChunk::data(&pendingOutput[0],
-                                                    kSharedAudioPacketBytes),
+                                                    packetBytes),
                                    m_context);
                         pendingOutput.erase(pendingOutput.begin(),
-                                            pendingOutput.begin() + kSharedAudioPacketBytes);
+                                            pendingOutput.begin() + packetBytes);
                     }
                 }
 
@@ -430,6 +518,7 @@ private:
     std::atomic<bool> m_stop;
     AudioSource::ChunkCallback m_callback;
     void* m_context;
+    AudioFormat m_outputFormat;
 };
 
 class AudioPlayer::Impl {
@@ -639,7 +728,7 @@ private:
 
 class AudioSource::Impl {
 public:
-    bool start(AudioSource::ChunkCallback, void*)
+    bool start(AudioSource::ChunkCallback, void*, const String&)
     {
         LOG((CLOG_INFO "server audio sharing is not supported on this platform"));
         return false;
@@ -832,7 +921,7 @@ private:
 
 class AudioSource::Impl {
 public:
-    bool start(AudioSource::ChunkCallback, void*)
+    bool start(AudioSource::ChunkCallback, void*, const String&)
     {
         LOG((CLOG_INFO "server audio sharing is not supported on this platform"));
         return false;
@@ -883,9 +972,9 @@ AudioSource::~AudioSource()
 }
 
 bool
-AudioSource::start(AudioSource::ChunkCallback callback, void* context)
+AudioSource::start(AudioSource::ChunkCallback callback, void* context, const String& quality)
 {
-    return m_impl->start(callback, context);
+    return m_impl->start(callback, context, quality);
 }
 
 void

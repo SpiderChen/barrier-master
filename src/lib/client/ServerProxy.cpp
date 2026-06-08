@@ -21,6 +21,7 @@
 #include "client/Client.h"
 #include "barrier/AudioChunk.h"
 #include "barrier/FileChunk.h"
+#include "barrier/FileClipboard.h"
 #include "barrier/ClipboardChunk.h"
 #include "barrier/StreamChunker.h"
 #include "barrier/Clipboard.h"
@@ -379,7 +380,7 @@ ServerProxy::onGrabClipboard(ClipboardID id)
 void
 ServerProxy::onClipboardChanged(ClipboardID id, const IClipboard* clipboard)
 {
-    std::string data = IClipboard::marshall(clipboard);
+    std::string data = FileClipboard::marshallWithoutFiles(clipboard);
     LOG((CLOG_DEBUG "sending clipboard %d seqnum=%d", id, m_seqNum));
 
     StreamChunker::sendClipboard(data, data.size(), id, m_seqNum, m_events, this);

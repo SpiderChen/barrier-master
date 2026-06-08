@@ -10,6 +10,7 @@
 #pragma once
 
 #include "barrier/AudioChunk.h"
+#include "base/String.h"
 
 #include <cstddef>
 
@@ -20,7 +21,7 @@ public:
     AudioSource();
     ~AudioSource();
 
-    bool start(ChunkCallback callback, void* context);
+    bool start(ChunkCallback callback, void* context, const String& quality = "low");
     void stop();
     bool isRunning() const;
 
