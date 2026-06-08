@@ -6,6 +6,7 @@ set B_QT_ROOT=C:\Qt
 set B_QT_VER=5.11.1
 set B_QT_MSVC=msvc2017_64
 set B_BONJOUR=C:\Program Files\Bonjour SDK
+set B_COPY_RUNTIME_DEPS=1
 
 set savedir=%cd%
 cd /d %~dp0
@@ -45,6 +46,7 @@ cmake -G "%cmake_gen%" -A x64 -D CMAKE_BUILD_TYPE=%B_BUILD_TYPE% -D CMAKE_PREFIX
 if ERRORLEVEL 1 goto failed
 cmake --build . --config %B_BUILD_TYPE%
 if ERRORLEVEL 1 goto failed
+if "%B_COPY_RUNTIME_DEPS%"=="0" goto skip_runtime_deps
 if exist bin\Debug (
     copy %B_QT_FULLPATH%\bin\Qt5Cored.dll bin\Debug\ > NUL
     copy %B_QT_FULLPATH%\bin\Qt5Guid.dll bin\Debug\ > NUL
@@ -69,6 +71,8 @@ if exist bin\Debug (
     echo Remember to copy supporting binaries and configuration files!
 )
 
+:skip_runtime_deps
+
 echo Build completed successfully
 set BUILD_FAILED=0
 goto done
@@ -86,6 +90,7 @@ set B_QT_VER=
 set B_QT_MSVC=
 set B_BONJOUR=
 set B_CMAKE_FLAGS=
+set B_COPY_RUNTIME_DEPS=
 set BONJOUR_SDK_HOME=
 set B_QT_FULLPATH=
 set savedir=
