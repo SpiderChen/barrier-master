@@ -118,7 +118,9 @@ jobs:
           New-Item -ItemType Directory -Force $packageDir | Out-Null
 
           Copy-Item "build\bin\Release\*" -Destination $packageDir -Recurse -Force
-          Copy-Item "res\openssl\barrier.conf" -Destination $packageDir -Force
+          if (Test-Path "res\openssl\barrier.conf") {
+            Copy-Item "res\openssl\barrier.conf" -Destination $packageDir -Force
+          }
 
           Get-ChildItem -Path (Join-Path $env:OPENSSL_ROOT "bin") -Filter "*.dll" |
             Copy-Item -Destination $packageDir -Force
