@@ -1,0 +1,179 @@
+name: GUI Artifacts
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BUILD_TYPE: Release
+  QT_VERSION: "5.15.2"
+  AQT_VERSION: "3.3.*"
+
+jobs:
+  windows-gui:
+    name: Windows x64 GUI
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Ensure source dependencies
+        shell: bash
+        run: bash .github/scripts/ensure-submodules.sh
+
+      - name: Install Qt
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "aqtinstall==$env:AQT_VERSION"
+          python -m aqt install-qt windows desktop "$env:QT_VERSION" win64_msvc2019_64 -O "$env:GITHUB_WORKSPACE\Qt"
+          Add-Content -Path $env:GITHUB_ENV -Value "QT_ROOT_DIR=$env:GITHUB_WORKSPACE\Qt\$env:QT_VERSION\msvc2019_64"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          choco install openssl --no-progress -y
+
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          if (-not $vcpkgRoot -or -not (Test-Path (Join-Path $vcpkgRoot "vcpkg.exe"))) {
+            $vcpkgRoot = Join-Path $env:GITHUB_WORKSPACE "build-deps\vcpkg"
+            git clone https://github.com/microsoft/vcpkg.git $vcpkgRoot
+            & (Join-Path $vcpkgRoot "bootstrap-vcpkg.bat") -disableMetrics
+          }
+
+          $vcpkg = Join-Path $vcpkgRoot "vcpkg.exe"
+          & $vcpkg install mdnsresponder:x64-windows --clean-after-build
+
+          $tripletDir = Join-Path $vcpkgRoot "installed\x64-windows"
+          $bonjourRoot = Join-Path $env:GITHUB_WORKSPACE "build-deps\BonjourSDK"
+          $bonjourInclude = Join-Path $bonjourRoot "Include"
+          $bonjourLib = Join-Path $bonjourRoot "Lib\x64"
+          New-Item -ItemType Directory -Force $bonjourInclude, $bonjourLib | Out-Null
+
+          $dnsHeader = Get-ChildItem -Path $tripletDir -Recurse -Filter dns_sd.h | Select-Object -First 1
+          $dnsLib = Get-ChildItem -Path $tripletDir -Recurse -Filter dnssd.lib | Select-Object -First 1
+          if (-not $dnsHeader -or -not $dnsLib) {
+            throw "vcpkg mdnsresponder did not provide dns_sd.h and dnssd.lib"
+          }
+
+          Copy-Item $dnsHeader.FullName -Destination $bonjourInclude
+          Copy-Item $dnsLib.FullName -Destination $bonjourLib
+
+          Add-Content -Path $env:GITHUB_ENV -Value "BONJOUR_SDK_HOME=$bonjourRoot"
+          Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_TRIPLET_DIR=$tripletDir"
+
+      - name: Configure build environment
+        shell: pwsh
+        run: |
+          $opensslRoot = @(
+            "${env:ProgramFiles}\OpenSSL-Win64",
+            "${env:ProgramFiles}\OpenSSL",
+            "${env:ProgramFiles(x86)}\OpenSSL-Win32"
+          ) | Where-Object { Test-Path (Join-Path $_ "include\openssl\ssl.h") } | Select-Object -First 1
+
+          if (-not $opensslRoot) {
+            throw "OpenSSL installation was not found."
+          }
+
+          @"
+          set B_BUILD_TYPE=$env:BUILD_TYPE
+          set B_QT_ROOT=$env:GITHUB_WORKSPACE\Qt
+          set B_QT_VER=$env:QT_VERSION
+          set B_QT_MSVC=msvc2019_64
+          set B_BONJOUR=$env:BONJOUR_SDK_HOME
+          set B_COPY_RUNTIME_DEPS=0
+          set OPENSSL_ROOT=$opensslRoot
+          set B_CMAKE_FLAGS=-DBARRIER_BUILD_GUI=ON -DBARRIER_BUILD_INSTALLER=OFF -DBARRIER_BUILD_TESTS=OFF
+          "@ | Set-Content -Encoding ASCII build_env.bat
+
+          Add-Content -Path $env:GITHUB_ENV -Value "OPENSSL_ROOT=$opensslRoot"
+
+      - name: Build GUI
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=x64
+          clean_build.bat
+
+      - name: Package portable GUI
+        shell: pwsh
+        run: |
+          $packageDir = Join-Path $env:GITHUB_WORKSPACE "artifacts\barrier-windows-x64-gui"
+          New-Item -ItemType Directory -Force $packageDir | Out-Null
+
+          Copy-Item "build\bin\Release\*" -Destination $packageDir -Recurse -Force
+          Copy-Item "res\openssl\barrier.conf" -Destination $packageDir -Force
+
+          Get-ChildItem -Path (Join-Path $env:OPENSSL_ROOT "bin") -Filter "*.dll" |
+            Copy-Item -Destination $packageDir -Force
+
+          $mdnsBin = Join-Path $env:VCPKG_TRIPLET_DIR "bin"
+          if (Test-Path $mdnsBin) {
+            Get-ChildItem -Path $mdnsBin -Filter "*.dll" |
+              Copy-Item -Destination $packageDir -Force
+          }
+
+          & (Join-Path $env:QT_ROOT_DIR "bin\windeployqt.exe") --release --no-translations --compiler-runtime (Join-Path $packageDir "barrier.exe")
+
+      - name: Upload Windows GUI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: barrier-windows-x64-gui
+          path: artifacts/barrier-windows-x64-gui
+          if-no-files-found: error
+
+  macos-gui:
+    name: macOS Intel GUI
+    runs-on: macos-15-intel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Ensure source dependencies
+        run: bash .github/scripts/ensure-submodules.sh
+
+      - name: Install dependencies
+        run: |
+          brew update
+          brew install pkg-config openssl@3
+          python3 -m pip install --upgrade pip
+          python3 -m pip install "aqtinstall==${AQT_VERSION}"
+          python3 -m aqt install-qt mac desktop "${QT_VERSION}" clang_64 -O "$PWD/Qt"
+          echo "QT_ROOT_DIR=$PWD/Qt/${QT_VERSION}/clang_64" >> "$GITHUB_ENV"
+          echo "MACDEPLOYQT=$PWD/Qt/${QT_VERSION}/clang_64/bin/macdeployqt" >> "$GITHUB_ENV"
+
+      - name: Build GUI bundle
+        env:
+          B_BUILD_TYPE: Release
+          BARRIER_BUILD_ENV: "1"
+          B_CMAKE_FLAGS: >-
+            -DBARRIER_BUILD_GUI=ON
+            -DBARRIER_BUILD_INSTALLER=ON
+            -DBARRIER_BUILD_TESTS=OFF
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/Qt/${{ env.QT_VERSION }}/clang_64
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13
+        run: sh -x ./clean_build.sh
+
+      - name: Upload macOS GUI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: barrier-macos-intel-gui
+          path: |
+            build/bundle/Barrier-*.dmg
+            build/bundle/Barrier.app
+          if-no-files-found: error
