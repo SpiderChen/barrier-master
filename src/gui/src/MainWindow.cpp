@@ -71,6 +71,13 @@ static const QString barrierConfigFilter(QObject::tr("Barrier Configurations (*.
 static const QString barrierConfigOpenFilter(barrierConfigFilter + ";;" + allFilesFilter);
 static const QString barrierConfigSaveFilter(barrierConfigFilter);
 
+#if defined(Q_OS_WIN)
+static QString quoteForCommand(const QString& value)
+{
+    return QString("\"%1\"").arg(value);
+}
+#endif
+
 static const char* barrierIconFiles[] =
 {
 #if defined(Q_OS_MAC)
@@ -511,6 +518,7 @@ void MainWindow::startBarrier()
 
     QString app;
     QStringList args;
+    QString serverConfigFilename;
 
     args << "-f" << "--no-tray" << "--debug" << appConfig().logLevelText();
 
@@ -563,11 +571,15 @@ void MainWindow::startBarrier()
     // launched the process (e.g. when launched with elevation). setting the
     // profile dir on launch ensures it uses the same profile dir is used
     // no matter how its relaunched.
-    args << "--profile-dir" << QString::fromStdString("\"" + barrier::DataDirectories::profile().u8string() + "\"");
+    QString profileDir = QString::fromStdString(barrier::DataDirectories::profile().u8string());
+    if (serviceMode) {
+        profileDir = quoteForCommand(profileDir);
+    }
+    args << "--profile-dir" << profileDir;
 #endif
 
     if ((barrier_type() == BarrierType::Client && !clientArgs(args, app))
-        || (barrier_type() == BarrierType::Server && !serverArgs(args, app)))
+        || (barrier_type() == BarrierType::Server && !serverArgs(args, app, serverConfigFilename)))
     {
         stopBarrier();
         return;
@@ -588,7 +600,9 @@ void MainWindow::startBarrier()
 
     appendLogDebug(QString("command: %1 %2").arg(app, args.join(" ")));
 
-    appendLogInfo("config file: " + configFilename());
+    if (barrier_type() == BarrierType::Server) {
+        appendLogInfo("config file: " + serverConfigFilename);
+    }
     appendLogInfo("log level: " + appConfig().logLevelText());
 
     if (appConfig().logToFile())
@@ -625,14 +639,22 @@ bool MainWindow::clientArgs(QStringList& args, QString& app)
     }
 
 #if defined(Q_OS_WIN)
-    // wrap in quotes so a malicious user can't start \Program.exe as admin.
-    app = QString("\"%1\"").arg(app);
+    if (appConfig().processMode() == Service) {
+        // wrap in quotes so a malicious user can't start \Program.exe as admin.
+        app = quoteForCommand(app);
+    }
 #endif
 
     if (appConfig().logToFile())
     {
         appConfig().persistLogDir();
-        args << "--log" << appConfig().logFilenameCmd();
+        QString logFilename = appConfig().logFilename();
+#if defined(Q_OS_WIN)
+        if (appConfig().processMode() == Service) {
+            logFilename = quoteForCommand(logFilename);
+        }
+#endif
+        args << "--log" << logFilename;
     }
 
     // check auto config first, if it is disabled or no server detected,
@@ -710,7 +732,7 @@ QString MainWindow::appPath(const QString& name)
     return appConfig().barrierProgramDir() + name;
 }
 
-bool MainWindow::serverArgs(QStringList& args, QString& app)
+bool MainWindow::serverArgs(QStringList& args, QString& app, QString& configFilename)
 {
     app = appPath(appConfig().barriersName());
 
@@ -722,27 +744,41 @@ bool MainWindow::serverArgs(QStringList& args, QString& app)
     }
 
 #if defined(Q_OS_WIN)
-    // wrap in quotes so a malicious user can't start \Program.exe as admin.
-    app = QString("\"%1\"").arg(app);
+    if (appConfig().processMode() == Service) {
+        // wrap in quotes so a malicious user can't start \Program.exe as admin.
+        app = quoteForCommand(app);
+    }
 #endif
 
     if (appConfig().logToFile())
     {
         appConfig().persistLogDir();
 
-        args << "--log" << appConfig().logFilenameCmd();
+        QString logFilename = appConfig().logFilename();
+#if defined(Q_OS_WIN)
+        if (appConfig().processMode() == Service) {
+            logFilename = quoteForCommand(logFilename);
+        }
+#endif
+        args << "--log" << logFilename;
     }
 
     if (!appConfig().getRequireClientCertificate()) {
         args << "--disable-client-cert-checking";
     }
 
-    QString configFilename = this->configFilename();
+    configFilename = this->configFilename();
+    if (configFilename.isEmpty()) {
+        return false;
+    }
+    QString configArgument = configFilename;
 #if defined(Q_OS_WIN)
-    // wrap in quotes in case username contains spaces.
-    configFilename = QString("\"%1\"").arg(configFilename);
+    if (appConfig().processMode() == Service) {
+        // wrap in quotes in case username contains spaces.
+        configArgument = quoteForCommand(configArgument);
+    }
 #endif
-    args << "-c" << configFilename << "--address" << address();
+    args << "-c" << configArgument << "--address" << address();
 
     return true;
 }

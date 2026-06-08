@@ -146,7 +146,7 @@ public slots:
         void setIcon(qBarrierState state);
         void setBarrierState(qBarrierState state);
         bool clientArgs(QStringList& args, QString& app);
-        bool serverArgs(QStringList& args, QString& app);
+        bool serverArgs(QStringList& args, QString& app, QString& configFilename);
         void setStatus(const QString& status);
         void updateFromLogLine(const QString& line);
         QString getIPAddresses();
