@@ -183,10 +183,18 @@ void generate_pem_self_signed_cert(const std::string& path)
     X509_gmtime_adj(X509_get_notAfter(cert), expiration_days * 24 * 3600);
     X509_set_pubkey(cert, private_key);
 
-    auto* name = X509_get_subject_name(cert);
-    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-                               reinterpret_cast<const unsigned char *>("Barrier"), -1, -1, 0);
-    X509_set_issuer_name(cert, name);
+    auto* name = X509_NAME_new();
+    if (!name) {
+        throw std::runtime_error("Could not allocate certificate subject");
+    }
+    auto name_free = finally([name]() { X509_NAME_free(name); });
+
+    if (X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+                                   reinterpret_cast<const unsigned char *>("Barrier"), -1, -1, 0) != 1 ||
+        X509_set_subject_name(cert, name) != 1 ||
+        X509_set_issuer_name(cert, name) != 1) {
+        throw std::runtime_error("Could not set certificate subject");
+    }
 
     X509_sign(cert, private_key, EVP_sha256());
 
