@@ -115,6 +115,7 @@ Server::Server(
 	m_waitDragInfoThread(true),
 	m_audioSource(NULL),
 	m_audioSession(0),
+	m_audioStartTimer(NULL),
 	m_args(args)
 {
 	// must have a primary client and it must have a canonical name
@@ -252,6 +253,7 @@ Server::~Server()
 	}
 
 	// remove event handlers and timers
+	cancelAudioStreamStart();
 	stopAudioStream();
 	if (m_args.m_enableAudio) {
 		m_events->removeHandler(m_events->forAudio().audioChunkSending(), this);
@@ -385,6 +387,11 @@ Server::adoptClient(BaseClientProxy* client)
 		new Server::ScreenConnectedInfo(getName(client));
 	m_events->addEvent(Event(m_events->forServer().connected(),
 								m_primaryClient->getEventTarget(), info));
+
+	if (m_audioSource != NULL) {
+		stopAudioStream();
+	}
+	updateAudioStreamTarget();
 }
 
 void
@@ -513,8 +520,6 @@ Server::switchScreen(BaseClientProxy* dst,
 	// since that's a waste of time we skip that and just warp the
 	// mouse.
 	if (m_active != dst) {
-		stopAudioStream();
-
 		// leave active screen
 		if (!m_active->leave()) {
 			// cannot leave screen
@@ -1581,6 +1586,16 @@ Server::handleAudioChunkSendingEvent(const Event& event, void*)
 }
 
 void
+Server::handleAudioStartTimeout(const Event&, void* vtimer)
+{
+	EventQueueTimer* timer = static_cast<EventQueueTimer*>(vtimer);
+	m_events->deleteTimer(timer);
+	m_events->removeHandler(Event::kTimer, timer);
+	m_audioStartTimer = NULL;
+	startAudioStream();
+}
+
+void
 Server::onClipboardChanged(BaseClientProxy* sender,
 				ClipboardID id, UInt32 seqNum)
 {
@@ -2139,12 +2154,12 @@ Server::onAudioChunkSending(const Event& event)
 	if (audioEvent->m_session != m_audioSession) {
 		return;
 	}
-	if (m_active == NULL || m_active == m_primaryClient) {
+	if (!hasAudioStreamTarget()) {
 		return;
 	}
 
 	AudioChunk* chunk = audioEvent->m_chunk;
-	m_active->audioChunkSending(chunk->m_chunk[0], &chunk->m_chunk[1], chunk->m_dataSize);
+	sendAudioChunkToClients(chunk->m_chunk[0], &chunk->m_chunk[1], chunk->m_dataSize);
 }
 
 void
@@ -2237,6 +2252,8 @@ Server::removeClient(BaseClientProxy* client)
 	// remove from list
 	m_clients.erase(getName(client));
 	m_clientSet.erase(i);
+
+	updateAudioStreamTarget();
 
 	return true;
 }
@@ -2335,8 +2352,6 @@ Server::forceLeaveClient(BaseClientProxy* client)
 	BaseClientProxy* active =
 		(m_activeSaver != NULL) ? m_activeSaver : m_active;
 	if (active == client) {
-		stopAudioStream();
-
 		// record new position (center of primary screen)
 		m_primaryClient->getCursorCenter(m_x, m_y);
 
@@ -2530,16 +2545,68 @@ Server::audio_chunk_callback(AudioChunk* chunk, void* context)
 void
 Server::startAudioStream()
 {
-	if (!m_args.m_enableAudio || m_active == NULL || m_active == m_primaryClient) {
+	if (!hasAudioStreamTarget() || m_audioSource != NULL) {
 		return;
 	}
 
-	stopAudioStream();
 	++m_audioSession;
 	m_audioSource = new AudioSource();
 	if (!m_audioSource->start(&Server::audio_chunk_callback, this)) {
 		delete m_audioSource;
 		m_audioSource = NULL;
+	}
+}
+
+bool
+Server::hasAudioStreamTarget() const
+{
+	if (!m_args.m_enableAudio) {
+		return false;
+	}
+
+	for (ClientList::const_iterator index = m_clients.begin();
+		 index != m_clients.end(); ++index) {
+		if (index->second != m_primaryClient) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void
+Server::sendAudioChunkToClients(UInt8 mark, const char* data, size_t dataSize)
+{
+	for (ClientList::const_iterator index = m_clients.begin();
+		 index != m_clients.end(); ++index) {
+		BaseClientProxy* client = index->second;
+		if (client != m_primaryClient) {
+			client->audioChunkSending(mark, data, dataSize);
+		}
+	}
+}
+
+void
+Server::scheduleAudioStreamStart()
+{
+	if (m_audioSource != NULL || m_audioStartTimer != NULL) {
+		return;
+	}
+
+	m_audioStartTimer = m_events->newOneShotTimer(2.0, NULL);
+	m_events->adoptHandler(Event::kTimer, m_audioStartTimer,
+							new TMethodEventJob<Server>(this,
+								&Server::handleAudioStartTimeout,
+								m_audioStartTimer));
+}
+
+void
+Server::cancelAudioStreamStart()
+{
+	if (m_audioStartTimer != NULL) {
+		m_events->deleteTimer(m_audioStartTimer);
+		m_events->removeHandler(Event::kTimer, m_audioStartTimer);
+		m_audioStartTimer = NULL;
 	}
 }
 
@@ -2554,9 +2621,7 @@ Server::stopAudioStream()
 	delete m_audioSource;
 	m_audioSource = NULL;
 
-	if (m_active != NULL && m_active != m_primaryClient) {
-		m_active->audioChunkSending(kDataEnd, NULL, 0);
-	}
+	sendAudioChunkToClients(kDataEnd, NULL, 0);
 
 	++m_audioSession;
 }
@@ -2564,14 +2629,11 @@ Server::stopAudioStream()
 void
 Server::updateAudioStreamTarget()
 {
-	if (!m_args.m_enableAudio) {
-		return;
-	}
-
-	if (m_active != NULL && m_active != m_primaryClient) {
-		startAudioStream();
+	if (hasAudioStreamTarget()) {
+		scheduleAudioStreamStart();
 	}
 	else {
+		cancelAudioStreamStart();
 		stopAudioStream();
 	}
 }

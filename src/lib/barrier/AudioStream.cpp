@@ -35,6 +35,12 @@ static const GUID kAudioPcmGuid =
     {0x00000001, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
 static const GUID kAudioFloatGuid =
     {0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
+static const UInt32 kSharedAudioSampleRate = 16000;
+static const UInt16 kSharedAudioChannels = 1;
+static const UInt16 kSharedAudioBitsPerSample = 16;
+static const size_t kSharedAudioPacketBytes =
+    kSharedAudioSampleRate * kSharedAudioChannels *
+    (kSharedAudioBitsPerSample / 8) / 10;
 
 static bool
 guidEquals(const GUID& left, const GUID& right)
@@ -119,44 +125,69 @@ writeInt16(std::vector<UInt8>& output, SInt16 sample)
     output.push_back(static_cast<UInt8>((sample >> 8) & 0xff));
 }
 
-static void
-convertToPcm16(const UInt8* input, UINT32 frames, const WAVEFORMATEX* format,
-               UInt16 outputChannels, std::vector<UInt8>& output, bool silent)
+static SInt16
+readChannelSample(const UInt8* frame, const WAVEFORMATEX* format, UInt16 channel)
 {
-    const UInt16 inputChannels = format->nChannels;
     const UInt16 inputBytesPerSample = format->wBitsPerSample / 8;
     const bool inputIsFloat = isFloatFormat(format);
     const bool inputIsPcm = isPcmFormat(format);
 
+    const UInt8* sampleData = frame + channel * inputBytesPerSample;
+    if (inputIsFloat && format->wBitsPerSample == 32) {
+        float floatSample = 0.0f;
+        std::memcpy(&floatSample, sampleData, sizeof(floatSample));
+        return clampSample(floatSample);
+    }
+    else if (inputIsPcm) {
+        return readPcmSample(sampleData, format->wBitsPerSample);
+    }
+
+    return 0;
+}
+
+static SInt16
+readMonoSample(const UInt8* frame, const WAVEFORMATEX* format, bool silent)
+{
+    if (silent || format->nChannels == 0) {
+        return 0;
+    }
+
+    SInt32 sum = 0;
+    for (UInt16 channel = 0; channel < format->nChannels; ++channel) {
+        sum += readChannelSample(frame, format, channel);
+    }
+
+    return static_cast<SInt16>(sum / format->nChannels);
+}
+
+static void
+convertToSharedPcm16(const UInt8* input, UINT32 frames, const WAVEFORMATEX* format,
+                     double& nextOutputFrame, std::vector<UInt8>& output,
+                     bool silent)
+{
     output.clear();
-    output.reserve(frames * outputChannels * sizeof(SInt16));
+    if (format->nSamplesPerSec == 0 || format->nBlockAlign == 0) {
+        return;
+    }
+
+    const double inputFramesPerOutputFrame =
+        static_cast<double>(format->nSamplesPerSec) /
+        static_cast<double>(kSharedAudioSampleRate);
+    output.reserve(static_cast<size_t>(
+        (frames / std::max(inputFramesPerOutputFrame, 1.0)) *
+        kSharedAudioChannels * sizeof(SInt16)));
 
     for (UINT32 frameIndex = 0; frameIndex < frames; ++frameIndex) {
         const UInt8* frame = input + frameIndex * format->nBlockAlign;
-
-        for (UInt16 outChannel = 0; outChannel < outputChannels; ++outChannel) {
-            SInt16 sample = 0;
-
-            if (!silent && inputChannels > 0) {
-                UInt16 inputChannel = outChannel;
-                if (inputChannel >= inputChannels) {
-                    inputChannel = inputChannels - 1;
-                }
-
-                const UInt8* sampleData = frame + inputChannel * inputBytesPerSample;
-                if (inputIsFloat && format->wBitsPerSample == 32) {
-                    float floatSample = 0.0f;
-                    std::memcpy(&floatSample, sampleData, sizeof(floatSample));
-                    sample = clampSample(floatSample);
-                }
-                else if (inputIsPcm) {
-                    sample = readPcmSample(sampleData, format->wBitsPerSample);
-                }
+        while (nextOutputFrame <= frameIndex) {
+            if (!silent) {
+                writeInt16(output, readMonoSample(frame, format, silent));
             }
-
-            writeInt16(output, sample);
+            nextOutputFrame += inputFramesPerOutputFrame;
         }
     }
+
+    nextOutputFrame -= frames;
 }
 
 class AudioSource::Impl {
@@ -301,20 +332,16 @@ private:
                 break;
             }
 
-            UInt16 outputChannels = static_cast<UInt16>(std::min<WORD>(mixFormat->nChannels, 2));
-            if (outputChannels == 0) {
-                outputChannels = 1;
-            }
-
             hr = audioClient->Start();
             if (FAILED(hr)) {
                 LOG((CLOG_ERR "server audio sharing unavailable: audio client Start failed 0x%08x", hr));
                 break;
             }
 
-            AudioFormat outputFormat(mixFormat->nSamplesPerSec, outputChannels, 16);
+            AudioFormat outputFormat(kSharedAudioSampleRate, kSharedAudioChannels,
+                                     kSharedAudioBitsPerSample);
             m_callback(AudioChunk::start(outputFormat), m_context);
-            captureLoop(captureClient, mixFormat, outputChannels);
+            captureLoop(captureClient, mixFormat);
             m_callback(AudioChunk::end(), m_context);
             audioClient->Stop();
         } while (false);
@@ -340,10 +367,11 @@ private:
         m_running = false;
     }
 
-    void captureLoop(IAudioCaptureClient* captureClient, const WAVEFORMATEX* mixFormat,
-                     UInt16 outputChannels)
+    void captureLoop(IAudioCaptureClient* captureClient, const WAVEFORMATEX* mixFormat)
     {
         std::vector<UInt8> output;
+        std::vector<UInt8> pendingOutput;
+        double nextOutputFrame = 0.0;
         UINT32 packetFrames = 0;
 
         while (!m_stop) {
@@ -370,9 +398,17 @@ private:
                 }
 
                 bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
-                convertToPcm16(data, framesAvailable, mixFormat, outputChannels, output, silent);
+                convertToSharedPcm16(data, framesAvailable, mixFormat,
+                                     nextOutputFrame, output, silent);
                 if (!output.empty()) {
-                    m_callback(AudioChunk::data(&output[0], output.size()), m_context);
+                    pendingOutput.insert(pendingOutput.end(), output.begin(), output.end());
+                    while (pendingOutput.size() >= kSharedAudioPacketBytes && !m_stop) {
+                        m_callback(AudioChunk::data(&pendingOutput[0],
+                                                    kSharedAudioPacketBytes),
+                                   m_context);
+                        pendingOutput.erase(pendingOutput.begin(),
+                                            pendingOutput.begin() + kSharedAudioPacketBytes);
+                    }
                 }
 
                 captureClient->ReleaseBuffer(framesAvailable);

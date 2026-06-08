@@ -323,6 +323,7 @@ private:
     void                handleFileChunkSendingEvent(const Event&, void*);
     void                handleFileRecieveCompletedEvent(const Event&, void*);
     void                handleAudioChunkSendingEvent(const Event&, void*);
+    void                handleAudioStartTimeout(const Event&, void*);
 
     // event processing
     void                onClipboardChanged(BaseClientProxy* sender,
@@ -383,6 +384,10 @@ private:
 
     // server audio sharing
     static void         audio_chunk_callback(AudioChunk* chunk, void* context);
+    bool                hasAudioStreamTarget() const;
+    void                sendAudioChunkToClients(UInt8 mark, const char* data, size_t dataSize);
+    void                scheduleAudioStreamStart();
+    void                cancelAudioStreamStart();
     void                startAudioStream();
     void                stopAudioStream();
     void                updateAudioStreamTarget();
@@ -501,6 +506,7 @@ private:
 
     AudioSource*        m_audioSource;
     UInt32              m_audioSession;
+    EventQueueTimer*    m_audioStartTimer;
 
     ClientListener*        m_clientListener;
     ServerArgs            m_args;
