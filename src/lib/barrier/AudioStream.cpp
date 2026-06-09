@@ -31,6 +31,7 @@ struct AudioQualityProfile {
 static const UInt16 kSharedAudioBitsPerSample = 16;
 static const size_t kSharedAudioPacketsPerSecond = 20;
 static const double kSharedAudioMaxSendLeadSeconds = 0.20;
+static const double kSharedAudioMaxNoOutputSeconds = 1.20;
 static const UInt32 kSharedAudioDropLogInterval = 50;
 
 static const AudioQualityProfile kAudioQualityProfiles[] = {
@@ -467,9 +468,9 @@ private:
         std::vector<UInt8> pendingOutput;
         double nextOutputFrame = 0.0;
         UINT32 packetFrames = 0;
-        UInt32 emptyPacketPolls = 0;
         UInt32 droppedPackets = 0;
         double nextSendTime = ARCH->time();
+        double lastOutputTime = nextSendTime;
 
         while (!m_stop) {
             HRESULT hr = captureClient->GetNextPacketSize(&packetFrames);
@@ -480,14 +481,13 @@ private:
 
             if (packetFrames == 0) {
                 ARCH->sleep(0.005);
-                if (++emptyPacketPolls >= 400) {
-                    LOG((CLOG_NOTE "server audio sharing idle; restarting stream"));
+                if (ARCH->time() - lastOutputTime >= kSharedAudioMaxNoOutputSeconds) {
+                    LOG((CLOG_NOTE "server audio sharing produced no audio; restarting stream"));
                     return;
                 }
                 continue;
             }
 
-            emptyPacketPolls = 0;
             while (packetFrames != 0 && !m_stop) {
                 BYTE* data = NULL;
                 UINT32 framesAvailable = 0;
@@ -502,7 +502,9 @@ private:
                 bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
                 convertToSharedPcm16(data, framesAvailable, mixFormat, outputFormat,
                                      nextOutputFrame, output, silent);
+                bool producedOutput = !output.empty();
                 if (!output.empty()) {
+                    lastOutputTime = ARCH->time();
                     pendingOutput.insert(pendingOutput.end(), output.begin(), output.end());
                     while (pendingOutput.size() >= packetBytes && !m_stop) {
                         const double now = ARCH->time();
@@ -529,6 +531,11 @@ private:
                 }
 
                 captureClient->ReleaseBuffer(framesAvailable);
+                if (!producedOutput &&
+                    ARCH->time() - lastOutputTime >= kSharedAudioMaxNoOutputSeconds) {
+                    LOG((CLOG_NOTE "server audio sharing produced no audio; restarting stream"));
+                    return;
+                }
 
                 hr = captureClient->GetNextPacketSize(&packetFrames);
                 if (FAILED(hr)) {

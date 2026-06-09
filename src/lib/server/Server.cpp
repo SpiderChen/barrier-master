@@ -55,7 +55,7 @@
 
 class ServerAudioChunkEvent : public EventData {
 public:
-    ServerAudioChunkEvent(UInt32 session, AudioChunk* chunk) :
+    ServerAudioChunkEvent(UInt32 session, AudioChunk* chunk = NULL) :
         m_session(session),
         m_chunk(chunk)
     {
@@ -116,6 +116,8 @@ Server::Server(
 	m_audioSource(NULL),
 	m_audioSession(0),
 	m_audioStartTimer(NULL),
+	m_pendingAudioChunk(NULL),
+	m_audioChunkEventPending(false),
 	m_args(args)
 {
 	// must have a primary client and it must have a canonical name
@@ -255,6 +257,9 @@ Server::~Server()
 	// remove event handlers and timers
 	cancelAudioStreamStart();
 	stopAudioStream();
+	delete m_pendingAudioChunk;
+	m_pendingAudioChunk = NULL;
+	m_audioChunkEventPending = false;
 	if (m_args.m_enableAudio) {
 		m_events->removeHandler(m_events->forAudio().audioChunkSending(), this);
 	}
@@ -2148,7 +2153,7 @@ Server::onAudioChunkSending(const Event& event)
 	ServerAudioChunkEvent* audioEvent =
 		static_cast<ServerAudioChunkEvent*>(event.getDataObject());
 
-	if (audioEvent == NULL || audioEvent->m_chunk == NULL) {
+	if (audioEvent == NULL) {
 		return;
 	}
 	if (audioEvent->m_session != m_audioSession) {
@@ -2156,10 +2161,23 @@ Server::onAudioChunkSending(const Event& event)
 	}
 
 	AudioChunk* chunk = audioEvent->m_chunk;
+	if (chunk == NULL) {
+		std::lock_guard<std::mutex> lock(m_audioChunkMutex);
+		chunk = m_pendingAudioChunk;
+		m_pendingAudioChunk = NULL;
+		m_audioChunkEventPending = false;
+	}
+	if (chunk == NULL) {
+		return;
+	}
+
 	UInt8 mark = chunk->m_chunk[0];
 	if (!hasAudioStreamTarget()) {
 		if (mark == kDataEnd) {
 			handleAudioStreamEnded();
+		}
+		if (chunk != audioEvent->m_chunk) {
+			delete chunk;
 		}
 		return;
 	}
@@ -2167,6 +2185,9 @@ Server::onAudioChunkSending(const Event& event)
 	sendAudioChunkToClients(mark, &chunk->m_chunk[1], chunk->m_dataSize);
 	if (mark == kDataEnd) {
 		handleAudioStreamEnded();
+	}
+	if (chunk != audioEvent->m_chunk) {
+		delete chunk;
 	}
 }
 
@@ -2545,9 +2566,40 @@ Server::audio_chunk_callback(AudioChunk* chunk, void* context)
 		return;
 	}
 
-	Event event(server->m_events->forAudio().audioChunkSending(), server);
-	event.setDataObject(new ServerAudioChunkEvent(server->m_audioSession, chunk));
-	server->m_events->addEvent(event);
+	server->queueAudioChunk(chunk);
+}
+
+void
+Server::queueAudioChunk(AudioChunk* chunk)
+{
+	if (chunk == NULL) {
+		return;
+	}
+
+	UInt8 mark = chunk->m_chunk[0];
+	if (mark != kDataChunk) {
+		Event event(m_events->forAudio().audioChunkSending(), this);
+		event.setDataObject(new ServerAudioChunkEvent(m_audioSession, chunk));
+		m_events->addEvent(event);
+		return;
+	}
+
+	bool addEvent = false;
+	{
+		std::lock_guard<std::mutex> lock(m_audioChunkMutex);
+		delete m_pendingAudioChunk;
+		m_pendingAudioChunk = chunk;
+		if (!m_audioChunkEventPending) {
+			m_audioChunkEventPending = true;
+			addEvent = true;
+		}
+	}
+
+	if (addEvent) {
+		Event event(m_events->forAudio().audioChunkSending(), this);
+		event.setDataObject(new ServerAudioChunkEvent(m_audioSession));
+		m_events->addEvent(event);
+	}
 }
 
 void
@@ -2555,6 +2607,13 @@ Server::startAudioStream()
 {
 	if (!hasAudioStreamTarget() || m_audioSource != NULL) {
 		return;
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(m_audioChunkMutex);
+		delete m_pendingAudioChunk;
+		m_pendingAudioChunk = NULL;
+		m_audioChunkEventPending = false;
 	}
 
 	++m_audioSession;
@@ -2608,6 +2667,13 @@ Server::handleAudioStreamEnded()
 	audioSource->stop();
 	delete audioSource;
 
+	{
+		std::lock_guard<std::mutex> lock(m_audioChunkMutex);
+		delete m_pendingAudioChunk;
+		m_pendingAudioChunk = NULL;
+		m_audioChunkEventPending = false;
+	}
+
 	++m_audioSession;
 	if (hasAudioStreamTarget()) {
 		scheduleAudioStreamStart();
@@ -2648,6 +2714,13 @@ Server::stopAudioStream()
 	m_audioSource->stop();
 	delete m_audioSource;
 	m_audioSource = NULL;
+
+	{
+		std::lock_guard<std::mutex> lock(m_audioChunkMutex);
+		delete m_pendingAudioChunk;
+		m_pendingAudioChunk = NULL;
+		m_audioChunkEventPending = false;
+	}
 
 	sendAudioChunkToClients(kDataEnd, NULL, 0);
 
