@@ -29,6 +29,9 @@ struct AudioQualityProfile {
 };
 
 static const UInt16 kSharedAudioBitsPerSample = 16;
+static const size_t kSharedAudioPacketsPerSecond = 20;
+static const double kSharedAudioMaxSendLeadSeconds = 0.20;
+static const UInt32 kSharedAudioDropLogInterval = 50;
 
 static const AudioQualityProfile kAudioQualityProfiles[] = {
     { "low", 16000, 1 },
@@ -70,7 +73,8 @@ audioPacketBytes(const AudioFormat& format)
 {
     return static_cast<size_t>(format.m_sampleRate) *
            static_cast<size_t>(format.m_channels) *
-           static_cast<size_t>(format.m_bitsPerSample / 8) / 10;
+           static_cast<size_t>(format.m_bitsPerSample / 8) /
+           kSharedAudioPacketsPerSecond;
 }
 
 } // namespace
@@ -463,6 +467,9 @@ private:
         std::vector<UInt8> pendingOutput;
         double nextOutputFrame = 0.0;
         UINT32 packetFrames = 0;
+        UInt32 emptyPacketPolls = 0;
+        UInt32 droppedPackets = 0;
+        double nextSendTime = ARCH->time();
 
         while (!m_stop) {
             HRESULT hr = captureClient->GetNextPacketSize(&packetFrames);
@@ -473,9 +480,14 @@ private:
 
             if (packetFrames == 0) {
                 ARCH->sleep(0.005);
+                if (++emptyPacketPolls >= 400) {
+                    LOG((CLOG_NOTE "server audio sharing idle; restarting stream"));
+                    return;
+                }
                 continue;
             }
 
+            emptyPacketPolls = 0;
             while (packetFrames != 0 && !m_stop) {
                 BYTE* data = NULL;
                 UINT32 framesAvailable = 0;
@@ -493,11 +505,26 @@ private:
                 if (!output.empty()) {
                     pendingOutput.insert(pendingOutput.end(), output.begin(), output.end());
                     while (pendingOutput.size() >= packetBytes && !m_stop) {
+                        const double now = ARCH->time();
+                        if (nextSendTime > now + kSharedAudioMaxSendLeadSeconds) {
+                            pendingOutput.erase(pendingOutput.begin(),
+                                                pendingOutput.begin() + packetBytes);
+                            ++droppedPackets;
+                            if ((droppedPackets % kSharedAudioDropLogInterval) == 1) {
+                                LOG((CLOG_NOTE "server audio sharing dropped stale queued audio"));
+                            }
+                            continue;
+                        }
+
                         m_callback(AudioChunk::data(&pendingOutput[0],
                                                     packetBytes),
                                    m_context);
                         pendingOutput.erase(pendingOutput.begin(),
                                             pendingOutput.begin() + packetBytes);
+                        if (nextSendTime < now) {
+                            nextSendTime = now;
+                        }
+                        nextSendTime += 1.0 / kSharedAudioPacketsPerSecond;
                     }
                 }
 
@@ -533,6 +560,10 @@ public:
     struct PendingBuffer {
         WAVEHDR* m_header;
         char* m_data;
+    };
+
+    enum {
+        kMaxPlaybackQueueBuffers = 12
     };
 
     Impl() :
@@ -586,16 +617,17 @@ public:
         return true;
     }
 
-    void play(const char* data, size_t dataSize)
+    bool play(const char* data, size_t dataSize)
     {
         if (!m_running || data == NULL || dataSize == 0) {
-            return;
+            return false;
         }
 
         cleanupFinished();
-        if (m_pending.size() > 32) {
-            LOG((CLOG_DEBUG "dropping audio chunk because playback queue is full"));
-            return;
+        if (m_pending.size() >= kMaxPlaybackQueueBuffers) {
+            LOG((CLOG_NOTE "client audio playback queue is stale; dropping queued audio"));
+            m_waveOutReset(m_waveOut);
+            cleanupAll();
         }
 
         char* buffer = new char[dataSize];
@@ -611,7 +643,8 @@ public:
             delete[] buffer;
             delete header;
             LOG((CLOG_ERR "client audio playback failed: waveOutPrepareHeader failed %u", result));
-            return;
+            stop();
+            return false;
         }
 
         result = m_waveOutWrite(m_waveOut, header, sizeof(WAVEHDR));
@@ -620,13 +653,15 @@ public:
             delete[] buffer;
             delete header;
             LOG((CLOG_ERR "client audio playback failed: waveOutWrite failed %u", result));
-            return;
+            stop();
+            return false;
         }
 
         PendingBuffer pending;
         pending.m_header = header;
         pending.m_data = buffer;
         m_pending.push_back(pending);
+        return true;
     }
 
     void stop()
@@ -820,25 +855,25 @@ public:
         return true;
     }
 
-    void play(const char* data, size_t dataSize)
+    bool play(const char* data, size_t dataSize)
     {
         if (data == NULL || dataSize == 0) {
-            return;
+            return false;
         }
 
         if (dataSize > static_cast<size_t>(std::numeric_limits<UInt32>::max())) {
             LOG((CLOG_DEBUG "dropping audio chunk because it is too large"));
-            return;
+            return true;
         }
 
         std::lock_guard<std::mutex> lock(m_mutex);
         if (!m_running || m_queue == NULL) {
-            return;
+            return false;
         }
 
         if (m_queuedBuffers >= kMaxQueuedBuffers) {
             LOG((CLOG_DEBUG "dropping audio chunk because playback queue is full"));
-            return;
+            return true;
         }
 
         AudioQueueBufferRef buffer = NULL;
@@ -847,7 +882,7 @@ public:
         if (status != noErr || buffer == NULL) {
             LOG((CLOG_ERR "client audio playback failed: AudioQueueAllocateBuffer failed %i",
                  static_cast<int>(status)));
-            return;
+            return false;
         }
 
         std::memcpy(buffer->mAudioData, data, dataSize);
@@ -860,7 +895,9 @@ public:
             AudioQueueFreeBuffer(m_queue, buffer);
             LOG((CLOG_ERR "client audio playback failed: AudioQueueEnqueueBuffer failed %i",
                  static_cast<int>(status)));
+            return false;
         }
+        return true;
     }
 
     void stop()
@@ -945,8 +982,9 @@ public:
         return false;
     }
 
-    void play(const char*, size_t)
+    bool play(const char*, size_t)
     {
+        return false;
     }
 
     void stop()
@@ -1005,10 +1043,10 @@ AudioPlayer::start(const AudioFormat& format)
     return m_impl->start(format);
 }
 
-void
+bool
 AudioPlayer::play(const char* data, size_t dataSize)
 {
-    m_impl->play(data, dataSize);
+    return m_impl->play(data, dataSize);
 }
 
 void

@@ -75,6 +75,8 @@ Client::Client(IEventQueue* events, const std::string& name, const NetworkAddres
     m_args(args),
     m_enableClipboard(true),
     m_audioPlayer(NULL),
+    m_audioFormat(),
+    m_hasAudioFormat(false),
     m_serverProtocolMinor(0)
 {
     assert(m_socketFactory != NULL);
@@ -773,16 +775,27 @@ Client::audioChunkReceived(UInt8 mark, const std::string& data)
             return;
         }
 
+        m_audioFormat = format;
+        m_hasAudioFormat = true;
         m_audioPlayer->start(format);
         break;
     }
 
     case kDataChunk:
-        m_audioPlayer->play(data.data(), data.size());
+        if (!m_audioPlayer->isRunning() && m_hasAudioFormat) {
+            LOG((CLOG_NOTE "client audio playback was stopped; restarting"));
+            m_audioPlayer->start(m_audioFormat);
+        }
+        if (!m_audioPlayer->play(data.data(), data.size()) && m_hasAudioFormat) {
+            LOG((CLOG_NOTE "client audio playback failed to accept a chunk; reopening device"));
+            m_audioPlayer->start(m_audioFormat);
+            m_audioPlayer->play(data.data(), data.size());
+        }
         break;
 
     case kDataEnd:
         stopAudioPlayback();
+        m_hasAudioFormat = false;
         break;
     }
 }
@@ -804,7 +817,7 @@ Client::onFileRecieveCompleted()
 {
     if (isReceivedFileSizeValid()) {
         if (!m_clipboardFileList.empty()) {
-            String path = DropHelper::writeToDir(m_screen->getDropTarget(),
+            String path = DropHelper::writeToFileClipboardCache(
                                                  m_clipboardFileList,
                                                  m_receivedFileData);
             if (!path.empty()) {

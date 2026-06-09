@@ -21,6 +21,7 @@
 #include "barrier/IClient.h"
 
 #include "barrier/Clipboard.h"
+#include "barrier/AudioChunk.h"
 #include "barrier/DragInformation.h"
 #include "barrier/FileClipboard.h"
 #include "barrier/INode.h"
@@ -239,5 +240,7 @@ private:
     ClientArgs            m_args;
     bool                m_enableClipboard;
     AudioPlayer*        m_audioPlayer;
+    AudioFormat         m_audioFormat;
+    bool                m_hasAudioFormat;
     SInt16              m_serverProtocolMinor;
 };

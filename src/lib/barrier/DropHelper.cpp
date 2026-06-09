@@ -22,6 +22,81 @@
 
 #include <fstream>
 
+#if SYSAPI_WIN32
+#include "common/win32/encoding_utilities.h"
+#include <windows.h>
+#else
+#include <cerrno>
+#include <cstring>
+#include <limits.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
+namespace {
+
+const char* const kFileClipboardCacheDir = "barrier-file-clipboard-cache";
+
+String
+fileClipboardCacheDir()
+{
+#if SYSAPI_WIN32
+    DWORD size = GetCurrentDirectoryW(0, NULL);
+    if (size == 0) {
+        LOG((CLOG_ERR "file clipboard cache unavailable: GetCurrentDirectory failed %lu",
+             GetLastError()));
+        return "";
+    }
+
+    std::vector<WCHAR> cwd(size, 0);
+    DWORD written = GetCurrentDirectoryW(size, cwd.data());
+    if (written == 0 || written >= size) {
+        LOG((CLOG_ERR "file clipboard cache unavailable: GetCurrentDirectory failed %lu",
+             GetLastError()));
+        return "";
+    }
+
+    std::vector<WCHAR> cacheName = utf8_to_win_char(kFileClipboardCacheDir);
+    std::wstring cachePath(cwd.data());
+    if (!cachePath.empty() && cachePath[cachePath.size() - 1] != L'\\') {
+        cachePath.append(L"\\");
+    }
+    cachePath.append(cacheName.data());
+
+    if (!CreateDirectoryW(cachePath.c_str(), NULL) &&
+        GetLastError() != ERROR_ALREADY_EXISTS) {
+        LOG((CLOG_ERR "file clipboard cache unavailable: CreateDirectory failed %lu",
+             GetLastError()));
+        return "";
+    }
+
+    return win_wchar_to_utf8(cachePath.c_str());
+#else
+    char cwd[PATH_MAX];
+    if (getcwd(cwd, sizeof(cwd)) == NULL) {
+        LOG((CLOG_ERR "file clipboard cache unavailable: getcwd failed: %s",
+             std::strerror(errno)));
+        return "";
+    }
+
+    String cachePath(cwd);
+    if (!cachePath.empty() && cachePath[cachePath.size() - 1] != '/') {
+        cachePath.append("/");
+    }
+    cachePath.append(kFileClipboardCacheDir);
+
+    if (mkdir(cachePath.c_str(), 0755) != 0 && errno != EEXIST) {
+        LOG((CLOG_ERR "file clipboard cache unavailable: mkdir failed: %s",
+             std::strerror(errno)));
+        return "";
+    }
+
+    return cachePath;
+#endif
+}
+
+} // namespace
+
 String
 DropHelper::writeToDir(const String& destination, DragFileList& fileList, String& data)
 {
@@ -57,4 +132,10 @@ DropHelper::writeToDir(const String& destination, DragFileList& fileList, String
     }
 
     return "";
+}
+
+String
+DropHelper::writeToFileClipboardCache(DragFileList& fileList, String& data)
+{
+    return writeToDir(fileClipboardCacheDir(), fileList, data);
 }

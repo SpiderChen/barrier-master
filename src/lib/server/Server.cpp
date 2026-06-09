@@ -2175,7 +2175,7 @@ Server::onFileRecieveCompleted()
 {
 	if (isReceivedFileSizeValid()) {
 		if (!m_clipboardFileList.empty()) {
-			String path = DropHelper::writeToDir(m_screen->getDropTarget(),
+			String path = DropHelper::writeToFileClipboardCache(
 												 m_clipboardFileList,
 												 m_receivedFileData);
 			if (!path.empty()) {

@@ -36,7 +36,7 @@ public:
     ~AudioPlayer();
 
     bool start(const AudioFormat& format);
-    void play(const char* data, size_t dataSize);
+    bool play(const char* data, size_t dataSize);
     void stop();
     bool isRunning() const;
 

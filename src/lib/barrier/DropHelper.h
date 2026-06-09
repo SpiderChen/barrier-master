@@ -24,4 +24,6 @@ class DropHelper {
 public:
     static String          writeToDir(const String& destination,
                             DragFileList& fileList, String& data);
+    static String          writeToFileClipboardCache(DragFileList& fileList,
+                            String& data);
 };
