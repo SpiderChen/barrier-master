@@ -2154,12 +2154,20 @@ Server::onAudioChunkSending(const Event& event)
 	if (audioEvent->m_session != m_audioSession) {
 		return;
 	}
+
+	AudioChunk* chunk = audioEvent->m_chunk;
+	UInt8 mark = chunk->m_chunk[0];
 	if (!hasAudioStreamTarget()) {
+		if (mark == kDataEnd) {
+			handleAudioStreamEnded();
+		}
 		return;
 	}
 
-	AudioChunk* chunk = audioEvent->m_chunk;
-	sendAudioChunkToClients(chunk->m_chunk[0], &chunk->m_chunk[1], chunk->m_dataSize);
+	sendAudioChunkToClients(mark, &chunk->m_chunk[1], chunk->m_dataSize);
+	if (mark == kDataEnd) {
+		handleAudioStreamEnded();
+	}
 }
 
 void
@@ -2583,6 +2591,26 @@ Server::sendAudioChunkToClients(UInt8 mark, const char* data, size_t dataSize)
 		if (client != m_primaryClient) {
 			client->audioChunkSending(mark, data, dataSize);
 		}
+	}
+}
+
+void
+Server::handleAudioStreamEnded()
+{
+	if (m_audioSource == NULL) {
+		return;
+	}
+
+	LOG((CLOG_NOTE "server audio sharing ended; scheduling restart"));
+
+	AudioSource* audioSource = m_audioSource;
+	m_audioSource = NULL;
+	audioSource->stop();
+	delete audioSource;
+
+	++m_audioSession;
+	if (hasAudioStreamTarget()) {
+		scheduleAudioStreamStart();
 	}
 }
 

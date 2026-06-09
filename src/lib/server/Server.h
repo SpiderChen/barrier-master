@@ -386,6 +386,7 @@ private:
     static void         audio_chunk_callback(AudioChunk* chunk, void* context);
     bool                hasAudioStreamTarget() const;
     void                sendAudioChunkToClients(UInt8 mark, const char* data, size_t dataSize);
+    void                handleAudioStreamEnded();
     void                scheduleAudioStreamStart();
     void                cancelAudioStreamStart();
     void                startAudioStream();
