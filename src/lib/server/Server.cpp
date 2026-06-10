@@ -2270,6 +2270,8 @@ Server::removeClient(BaseClientProxy* client)
 		return false;
 	}
 
+	const std::string clientName = getName(client);
+
 	// remove event handlers
 	m_events->removeHandler(m_events->forIScreen().shapeChanged(),
 							client->getEventTarget());
@@ -2279,7 +2281,7 @@ Server::removeClient(BaseClientProxy* client)
 							client->getEventTarget());
 
 	// remove from list
-	m_clients.erase(getName(client));
+	m_clients.erase(clientName);
 	m_clientSet.erase(i);
 
 	updateAudioStreamTarget();
@@ -2587,6 +2589,8 @@ Server::queueAudioChunk(AudioChunk* chunk)
 	bool addEvent = false;
 	{
 		std::lock_guard<std::mutex> lock(m_audioChunkMutex);
+		// Audio is realtime: keep only the newest PCM frame from the COM
+		// capture thread so the main protocol stream cannot build a backlog.
 		delete m_pendingAudioChunk;
 		m_pendingAudioChunk = chunk;
 		if (!m_audioChunkEventPending) {
@@ -2647,12 +2651,38 @@ Server::hasAudioStreamTarget() const
 void
 Server::sendAudioChunkToClients(UInt8 mark, const char* data, size_t dataSize)
 {
-	for (ClientList::const_iterator index = m_clients.begin();
-		 index != m_clients.end(); ++index) {
-		BaseClientProxy* client = index->second;
-		if (client != m_primaryClient) {
-			client->audioChunkSending(mark, data, dataSize);
+	if (mark == kDataStart || mark == kDataEnd) {
+		for (ClientList::const_iterator index = m_clients.begin();
+			 index != m_clients.end(); ++index) {
+			BaseClientProxy* client = index->second;
+			if (client != m_primaryClient) {
+				sendAudioChunkToClient(client, mark, data, dataSize);
+			}
 		}
+		return;
+	}
+
+	if (m_active != NULL && m_active != m_primaryClient) {
+		sendAudioChunkToClient(m_active, mark, data, dataSize);
+	}
+}
+
+bool
+Server::sendAudioChunkToClient(BaseClientProxy* client, UInt8 mark,
+							   const char* data, size_t dataSize)
+{
+	if (client == NULL || client == m_primaryClient) {
+		return false;
+	}
+
+	try {
+		client->audioChunkSending(mark, data, dataSize);
+		return true;
+	}
+	catch (XBase& e) {
+		LOG((CLOG_WARN "server audio sharing send failed for client \"%s\": %s",
+			 getName(client).c_str(), e.what()));
+		return false;
 	}
 }
 

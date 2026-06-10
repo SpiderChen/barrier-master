@@ -389,6 +389,8 @@ private:
     bool                hasAudioStreamTarget() const;
     void                queueAudioChunk(AudioChunk* chunk);
     void                sendAudioChunkToClients(UInt8 mark, const char* data, size_t dataSize);
+    bool                sendAudioChunkToClient(BaseClientProxy* client, UInt8 mark,
+                                               const char* data, size_t dataSize);
     void                handleAudioStreamEnded();
     void                scheduleAudioStreamStart();
     void                cancelAudioStreamStart();
