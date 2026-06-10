@@ -181,8 +181,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew update
-          brew install pkg-config openssl@3
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install pkg-config openssl@3
           python3 -m venv "$PWD/.venv-aqt"
           . "$PWD/.venv-aqt/bin/activate"
           python -m pip install --upgrade pip
