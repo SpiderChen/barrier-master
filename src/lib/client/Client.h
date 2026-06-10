@@ -175,7 +175,7 @@ private:
     void                sendEvent(Event::Type, void*);
     void                sendConnectionFailedEvent(const char* msg);
     void                sendFileChunk(const void* data);
-    void send_file_thread(const char* filename);
+    void send_file_thread(String filename);
     void                send_files_thread(FilePathList filenames);
     void write_to_drop_dir_thread();
     void                setupConnecting();

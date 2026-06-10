@@ -894,17 +894,23 @@ Client::isReceivedFileSizeValid()
 void
 Client::sendFileToServer(const char* filename)
 {
+    if (filename == NULL || filename[0] == '\0') {
+        return;
+    }
+
+    String filenameCopy(filename);
+
     if (m_sendFileThread != NULL) {
         StreamChunker::interruptFile();
     }
 
-    m_sendFileThread = new Thread([this, filename]() { send_file_thread(filename); });
+    m_sendFileThread = new Thread([this, filenameCopy]() { send_file_thread(filenameCopy); });
 }
 
-void Client::send_file_thread(const char* filename)
+void Client::send_file_thread(String filename)
 {
     try {
-        StreamChunker::sendFile(filename, m_events, this);
+        StreamChunker::sendFile(filename.c_str(), m_events, this);
     }
     catch (std::runtime_error& error) {
         LOG((CLOG_ERR "failed sending file chunks: %s", error.what()));

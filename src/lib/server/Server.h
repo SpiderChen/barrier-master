@@ -369,7 +369,7 @@ private:
     void                forceLeaveClient(BaseClientProxy* client);
 
     // thread function for sending file
-    void send_file_thread(const char* filename);
+    void send_file_thread(String filename);
     void send_files_thread(FilePathList filenames);
 
     // thread function for writing file to drop directory
@@ -381,7 +381,9 @@ private:
     // send drag info to new client screen
     void                sendDragInfo(BaseClientProxy* newScreen);
     void                sendClipboardFilesToActive(const IClipboard* clipboard);
-    void                sendFilesToClient(const FilePathList& filenames);
+    void                sendFilesToClient(BaseClientProxy* target,
+                            const FilePathList& filenames);
+    BaseClientProxy*    getFileTransferTarget() const;
     void                setLocalFileClipboard();
 
     // server audio sharing
@@ -501,6 +503,7 @@ private:
     DragFileList        m_fakeDragFileList;
     DragFileList        m_clipboardFileList;
     FilePathList        m_receivedClipboardFilePaths;
+    std::string         m_fileTransferTargetName;
     Thread*                m_sendFileThread;
     Thread*                m_writeToDropDirThread;
     std::string m_dragFileExt;

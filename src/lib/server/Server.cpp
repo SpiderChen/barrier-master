@@ -2141,10 +2141,14 @@ Server::onFileChunkSending(const void* data)
 	FileChunk* chunk = static_cast<FileChunk*>(const_cast<void*>(data));
 
 	LOG((CLOG_DEBUG1 "sending file chunk"));
-	assert(m_active != NULL);
+	BaseClientProxy* target = getFileTransferTarget();
+	if (target == NULL || target == m_primaryClient) {
+		LOG((CLOG_WARN "dropping file chunk because transfer target is unavailable"));
+		return;
+	}
 
 	// relay
-	m_active->fileChunkSending(chunk->m_chunk[0], &chunk->m_chunk[1], chunk->m_dataSize);
+	target->fileChunkSending(chunk->m_chunk[0], &chunk->m_chunk[1], chunk->m_dataSize);
 }
 
 void
@@ -2512,18 +2516,29 @@ Server::isReceivedFileSizeValid()
 void
 Server::sendFileToClient(const char* filename)
 {
+	if (filename == NULL || filename[0] == '\0') {
+		return;
+	}
+	if (m_active == NULL || m_active == m_primaryClient) {
+		LOG((CLOG_WARN "cannot send file without an active secondary client"));
+		return;
+	}
+
+	String filenameCopy(filename);
+
 	if (m_sendFileThread != NULL) {
 		StreamChunker::interruptFile();
 	}
 
-    m_sendFileThread = new Thread([this, filename]() { send_file_thread(filename); });
+	m_fileTransferTargetName = getName(m_active);
+	m_sendFileThread = new Thread([this, filenameCopy]() { send_file_thread(filenameCopy); });
 }
 
-void Server::send_file_thread(const char* filename)
+void Server::send_file_thread(String filename)
 {
 	try {
-		LOG((CLOG_DEBUG "sending file to client, filename=%s", filename));
-		StreamChunker::sendFile(filename, m_events, this);
+		LOG((CLOG_DEBUG "sending file to client, filename=%s", filename.c_str()));
+		StreamChunker::sendFile(filename.c_str(), m_events, this);
 	}
 	catch (std::runtime_error &error) {
 		LOG((CLOG_ERR "failed sending file chunks, error: %s", error.what()));
@@ -2533,12 +2548,18 @@ void Server::send_file_thread(const char* filename)
 }
 
 void
-Server::sendFilesToClient(const FilePathList& filenames)
+Server::sendFilesToClient(BaseClientProxy* target, const FilePathList& filenames)
 {
+	if (target == NULL || target == m_primaryClient) {
+		LOG((CLOG_WARN "cannot send copied files without a secondary client target"));
+		return;
+	}
+
 	if (m_sendFileThread != NULL) {
 		StreamChunker::interruptFile();
 	}
 
+	m_fileTransferTargetName = getName(target);
 	m_sendFileThread = new Thread([this, filenames]() { send_files_thread(filenames); });
 }
 
@@ -2557,6 +2578,23 @@ Server::send_files_thread(FilePathList filenames)
 	}
 
 	m_sendFileThread = NULL;
+}
+
+BaseClientProxy*
+Server::getFileTransferTarget() const
+{
+	if (m_fileTransferTargetName.empty()) {
+		return m_active;
+	}
+
+	ClientList::const_iterator index = m_clients.find(m_fileTransferTargetName);
+	if (index == m_clients.end()) {
+		LOG((CLOG_WARN "file transfer target \"%s\" is no longer connected",
+			 m_fileTransferTargetName.c_str()));
+		return NULL;
+	}
+
+	return index->second;
 }
 
 void
@@ -2825,8 +2863,9 @@ Server::sendClipboardFilesToActive(const IClipboard* clipboard)
 		return;
 	}
 
-	m_active->sendFileClipboard(fileCount, transferInfo.c_str(), transferInfo.size());
-	sendFilesToClient(transferablePaths);
+	BaseClientProxy* target = m_active;
+	target->sendFileClipboard(fileCount, transferInfo.c_str(), transferInfo.size());
+	sendFilesToClient(target, transferablePaths);
 }
 
 void
