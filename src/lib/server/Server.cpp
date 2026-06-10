@@ -2621,6 +2621,9 @@ Server::startAudioStream()
 	if (!m_audioSource->start(&Server::audio_chunk_callback, this, m_args.m_audioQuality)) {
 		delete m_audioSource;
 		m_audioSource = NULL;
+		if (hasAudioStreamTarget()) {
+			scheduleAudioStreamStart();
+		}
 	}
 }
 

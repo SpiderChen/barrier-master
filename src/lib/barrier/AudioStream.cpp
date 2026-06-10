@@ -29,9 +29,9 @@ struct AudioQualityProfile {
 };
 
 static const UInt16 kSharedAudioBitsPerSample = 16;
-static const size_t kSharedAudioPacketsPerSecond = 20;
+static const size_t kSharedAudioPacketsPerSecond = 10;
 static const double kSharedAudioMaxSendLeadSeconds = 0.20;
-static const double kSharedAudioMaxNoOutputSeconds = 1.20;
+static const double kSharedAudioIdlePollSeconds = 0.050;
 static const UInt32 kSharedAudioDropLogInterval = 50;
 
 static const AudioQualityProfile kAudioQualityProfiles[] = {
@@ -249,6 +249,10 @@ convertToSharedPcm16(const UInt8* input, UINT32 frames, const WAVEFORMATEX* form
         outputFormat.m_bitsPerSample != 16) {
         return;
     }
+    if (silent) {
+        nextOutputFrame = 0.0;
+        return;
+    }
 
     const double inputFramesPerOutputFrame =
         static_cast<double>(format->nSamplesPerSec) /
@@ -343,6 +347,7 @@ private:
         HMODULE ole32 = LoadLibraryA("ole32.dll");
         if (ole32 == NULL) {
             LOG((CLOG_ERR "server audio sharing unavailable: failed to load ole32.dll"));
+            notifyStreamEnded();
             m_running = false;
             return;
         }
@@ -360,6 +365,7 @@ private:
             coCreateInstance == NULL || coTaskMemFree == NULL) {
             LOG((CLOG_ERR "server audio sharing unavailable: failed to load COM entry points"));
             FreeLibrary(ole32);
+            notifyStreamEnded();
             m_running = false;
             return;
         }
@@ -368,6 +374,7 @@ private:
         if (FAILED(hr)) {
             LOG((CLOG_ERR "server audio sharing unavailable: CoInitializeEx failed 0x%08x", hr));
             FreeLibrary(ole32);
+            notifyStreamEnded();
             m_running = false;
             return;
         }
@@ -377,6 +384,7 @@ private:
         IAudioClient* audioClient = NULL;
         IAudioCaptureClient* captureClient = NULL;
         WAVEFORMATEX* mixFormat = NULL;
+        bool audioClientStarted = false;
 
         do {
             hr = coCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL,
@@ -427,14 +435,16 @@ private:
                 LOG((CLOG_ERR "server audio sharing unavailable: audio client Start failed 0x%08x", hr));
                 break;
             }
+            audioClientStarted = true;
 
             AudioFormat outputFormat = m_outputFormat;
             m_callback(AudioChunk::start(outputFormat), m_context);
             captureLoop(captureClient, mixFormat, outputFormat);
-            m_callback(AudioChunk::end(), m_context);
-            audioClient->Stop();
         } while (false);
 
+        if (audioClientStarted) {
+            audioClient->Stop();
+        }
         if (mixFormat != NULL) {
             coTaskMemFree(mixFormat);
         }
@@ -453,7 +463,15 @@ private:
 
         coUninitialize();
         FreeLibrary(ole32);
+        notifyStreamEnded();
         m_running = false;
+    }
+
+    void notifyStreamEnded()
+    {
+        if (!m_stop && m_callback != NULL) {
+            m_callback(AudioChunk::end(), m_context);
+        }
     }
 
     void captureLoop(IAudioCaptureClient* captureClient, const WAVEFORMATEX* mixFormat,
@@ -470,7 +488,6 @@ private:
         UINT32 packetFrames = 0;
         UInt32 droppedPackets = 0;
         double nextSendTime = ARCH->time();
-        double lastOutputTime = nextSendTime;
 
         while (!m_stop) {
             HRESULT hr = captureClient->GetNextPacketSize(&packetFrames);
@@ -480,11 +497,9 @@ private:
             }
 
             if (packetFrames == 0) {
-                ARCH->sleep(0.005);
-                if (ARCH->time() - lastOutputTime >= kSharedAudioMaxNoOutputSeconds) {
-                    LOG((CLOG_NOTE "server audio sharing produced no audio; restarting stream"));
-                    return;
-                }
+                // Silence and paused sources are normal; keep the stream open
+                // so playback resumes without forcing a protocol-level end.
+                ARCH->sleep(kSharedAudioIdlePollSeconds);
                 continue;
             }
 
@@ -502,9 +517,7 @@ private:
                 bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
                 convertToSharedPcm16(data, framesAvailable, mixFormat, outputFormat,
                                      nextOutputFrame, output, silent);
-                bool producedOutput = !output.empty();
                 if (!output.empty()) {
-                    lastOutputTime = ARCH->time();
                     pendingOutput.insert(pendingOutput.end(), output.begin(), output.end());
                     while (pendingOutput.size() >= packetBytes && !m_stop) {
                         const double now = ARCH->time();
@@ -531,11 +544,6 @@ private:
                 }
 
                 captureClient->ReleaseBuffer(framesAvailable);
-                if (!producedOutput &&
-                    ARCH->time() - lastOutputTime >= kSharedAudioMaxNoOutputSeconds) {
-                    LOG((CLOG_NOTE "server audio sharing produced no audio; restarting stream"));
-                    return;
-                }
 
                 hr = captureClient->GetNextPacketSize(&packetFrames);
                 if (FAILED(hr)) {
@@ -632,9 +640,8 @@ public:
 
         cleanupFinished();
         if (m_pending.size() >= kMaxPlaybackQueueBuffers) {
-            LOG((CLOG_NOTE "client audio playback queue is stale; dropping queued audio"));
-            m_waveOutReset(m_waveOut);
-            cleanupAll();
+            LOG((CLOG_DEBUG "dropping audio chunk because playback queue is full"));
+            return true;
         }
 
         char* buffer = new char[dataSize];
