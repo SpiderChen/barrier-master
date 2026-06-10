@@ -34,16 +34,31 @@ jobs:
       - name: Install dependencies
         shell: pwsh
         run: |
-          choco install openssl --no-progress -y
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          if (-not $vcpkgRoot -or -not (Test-Path (Join-Path $vcpkgRoot "vcpkg.exe"))) {
+            $vcpkgRoot = Join-Path $env:GITHUB_WORKSPACE "build-deps\vcpkg"
+            git clone https://github.com/microsoft/vcpkg.git $vcpkgRoot
+            & (Join-Path $vcpkgRoot "bootstrap-vcpkg.bat") -disableMetrics
+          }
+
+          $vcpkg = Join-Path $vcpkgRoot "vcpkg.exe"
+          & $vcpkg install openssl:x64-windows --clean-after-build
+
+          $opensslRoot = Join-Path $vcpkgRoot "installed\x64-windows"
+          if (-not (Test-Path (Join-Path $opensslRoot "include\openssl\ssl.h"))) {
+            throw "vcpkg openssl did not provide include\openssl\ssl.h"
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "OPENSSL_ROOT=$opensslRoot"
 
       - name: Configure build environment
         shell: pwsh
         run: |
           $opensslRoot = @(
+            "${env:OPENSSL_ROOT}",
             "${env:ProgramFiles}\OpenSSL-Win64",
             "${env:ProgramFiles}\OpenSSL",
             "${env:ProgramFiles(x86)}\OpenSSL-Win32"
-          ) | Where-Object { Test-Path (Join-Path $_ "include\openssl\ssl.h") } | Select-Object -First 1
+          ) | Where-Object { $_ -and (Test-Path (Join-Path $_ "include\openssl\ssl.h")) } | Select-Object -First 1
 
           if (-not $opensslRoot) {
             throw "OpenSSL installation was not found."

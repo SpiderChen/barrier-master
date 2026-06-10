@@ -44,7 +44,6 @@ jobs:
       - name: Install dependencies
         shell: pwsh
         run: |
-          choco install openssl --no-progress -y
           choco install ninja --no-progress -y
 
           $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
@@ -55,13 +54,18 @@ jobs:
           }
 
           $vcpkg = Join-Path $vcpkgRoot "vcpkg.exe"
-          & $vcpkg install mdnsresponder:x64-windows --clean-after-build
+          & $vcpkg install openssl:x64-windows mdnsresponder:x64-windows --clean-after-build
 
           $tripletDir = Join-Path $vcpkgRoot "installed\x64-windows"
+          $opensslRoot = $tripletDir
           $bonjourRoot = Join-Path $env:GITHUB_WORKSPACE "build-deps\BonjourSDK"
           $bonjourInclude = Join-Path $bonjourRoot "Include"
           $bonjourLib = Join-Path $bonjourRoot "Lib\x64"
           New-Item -ItemType Directory -Force $bonjourInclude, $bonjourLib | Out-Null
+
+          if (-not (Test-Path (Join-Path $opensslRoot "include\openssl\ssl.h"))) {
+            throw "vcpkg openssl did not provide include\openssl\ssl.h"
+          }
 
           $dnsHeader = Get-ChildItem -Path $tripletDir -Recurse -Filter dns_sd.h | Select-Object -First 1
           $dnsLib = Get-ChildItem -Path $tripletDir -Recurse -Filter dnssd.lib | Select-Object -First 1
@@ -74,15 +78,17 @@ jobs:
 
           Add-Content -Path $env:GITHUB_ENV -Value "BONJOUR_SDK_HOME=$bonjourRoot"
           Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_TRIPLET_DIR=$tripletDir"
+          Add-Content -Path $env:GITHUB_ENV -Value "OPENSSL_ROOT=$opensslRoot"
 
       - name: Configure build environment
         shell: pwsh
         run: |
           $opensslRoot = @(
+            "${env:OPENSSL_ROOT}",
             "${env:ProgramFiles}\OpenSSL-Win64",
             "${env:ProgramFiles}\OpenSSL",
             "${env:ProgramFiles(x86)}\OpenSSL-Win32"
-          ) | Where-Object { Test-Path (Join-Path $_ "include\openssl\ssl.h") } | Select-Object -First 1
+          ) | Where-Object { $_ -and (Test-Path (Join-Path $_ "include\openssl\ssl.h")) } | Select-Object -First 1
 
           if (-not $opensslRoot) {
             throw "OpenSSL installation was not found."
