@@ -71,7 +71,8 @@ public:
     AudioChunk* m_chunk;
 };
 
-static const size_t kMaxRealtimeAudioQueuedChunks = 6;
+static const size_t kMaxRealtimeAudioQueuedChunks = 12;
+static const double kAudioStreamRestartDelaySeconds = 0.35;
 
 static UInt32
 getQueuedOutputBytes(barrier::IStream* stream)
@@ -2807,7 +2808,7 @@ Server::scheduleAudioStreamStart()
 		return;
 	}
 
-	m_audioStartTimer = m_events->newOneShotTimer(2.0, NULL);
+	m_audioStartTimer = m_events->newOneShotTimer(kAudioStreamRestartDelaySeconds, NULL);
 	m_events->adoptHandler(Event::kTimer, m_audioStartTimer,
 							new TMethodEventJob<Server>(this,
 								&Server::handleAudioStartTimeout,

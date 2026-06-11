@@ -188,9 +188,12 @@ private:
     void                cleanupScreen();
     void                cleanupTimer();
     void                cleanupStream();
+    void                scheduleAudioPlaybackStop();
+    void                cancelAudioPlaybackStop();
     void                handleConnected(const Event&, void*);
     void                handleConnectionFailed(const Event&, void*);
     void                handleConnectTimeout(const Event&, void*);
+    void                handleAudioStopTimeout(const Event&, void*);
     void                handleOutputError(const Event&, void*);
     void                handleDisconnected(const Event&, void*);
     void                handleShapeChanged(const Event&, void*);
@@ -241,6 +244,7 @@ private:
     ClientArgs            m_args;
     bool                m_enableClipboard;
     AudioPlayer*        m_audioPlayer;
+    EventQueueTimer*    m_audioStopTimer;
     AudioFormat         m_audioFormat;
     bool                m_hasAudioFormat;
     SInt16              m_serverProtocolMinor;

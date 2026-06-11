@@ -47,6 +47,16 @@
 #include <stdexcept>
 #include <fstream>
 
+static const double kAudioEndGraceSeconds = 0.75;
+
+static bool
+isSameAudioFormat(const AudioFormat& left, const AudioFormat& right)
+{
+    return left.m_sampleRate == right.m_sampleRate &&
+           left.m_channels == right.m_channels &&
+           left.m_bitsPerSample == right.m_bitsPerSample;
+}
+
 //
 // Client
 //
@@ -75,6 +85,7 @@ Client::Client(IEventQueue* events, const std::string& name, const NetworkAddres
     m_args(args),
     m_enableClipboard(true),
     m_audioPlayer(NULL),
+    m_audioStopTimer(NULL),
     m_audioFormat(),
     m_hasAudioFormat(false),
     m_serverProtocolMinor(0)
@@ -123,6 +134,7 @@ Client::~Client()
     cleanupScreen();
     cleanupConnecting();
     cleanupConnection();
+    cancelAudioPlaybackStop();
     stopAudioPlayback();
     delete m_audioPlayer;
     delete m_socketFactory;
@@ -608,6 +620,30 @@ Client::cleanupStream()
 }
 
 void
+Client::scheduleAudioPlaybackStop()
+{
+    if (m_audioStopTimer != NULL || m_audioPlayer == NULL) {
+        return;
+    }
+
+    m_audioStopTimer = m_events->newOneShotTimer(kAudioEndGraceSeconds, NULL);
+    m_events->adoptHandler(Event::kTimer, m_audioStopTimer,
+                            new TMethodEventJob<Client>(this,
+                                &Client::handleAudioStopTimeout,
+                                m_audioStopTimer));
+}
+
+void
+Client::cancelAudioPlaybackStop()
+{
+    if (m_audioStopTimer != NULL) {
+        m_events->removeHandler(Event::kTimer, m_audioStopTimer);
+        m_events->deleteTimer(m_audioStopTimer);
+        m_audioStopTimer = NULL;
+    }
+}
+
+void
 Client::handleConnected(const Event&, void*)
 {
     LOG((CLOG_DEBUG1 "connected;  wait for hello"));
@@ -778,13 +814,20 @@ Client::audioChunkReceived(UInt8 mark, const std::string& data)
             return;
         }
 
+        const bool canReusePlayer =
+            m_hasAudioFormat && isSameAudioFormat(m_audioFormat, format) &&
+            m_audioPlayer->isRunning();
+        cancelAudioPlaybackStop();
         m_audioFormat = format;
         m_hasAudioFormat = true;
-        m_audioPlayer->start(format);
+        if (!canReusePlayer) {
+            m_audioPlayer->start(format);
+        }
         break;
     }
 
     case kDataChunk:
+        cancelAudioPlaybackStop();
         if (!m_audioPlayer->isRunning() && m_hasAudioFormat) {
             LOG((CLOG_NOTE "client audio playback was stopped; restarting"));
             m_audioPlayer->start(m_audioFormat);
@@ -797,8 +840,7 @@ Client::audioChunkReceived(UInt8 mark, const std::string& data)
         break;
 
     case kDataEnd:
-        stopAudioPlayback();
-        m_hasAudioFormat = false;
+        scheduleAudioPlaybackStop();
         break;
     }
 }
@@ -848,6 +890,22 @@ Client::stopAudioPlayback()
     if (m_audioPlayer != NULL) {
         m_audioPlayer->stop();
     }
+}
+
+void
+Client::handleAudioStopTimeout(const Event&, void* vtimer)
+{
+    EventQueueTimer* timer = static_cast<EventQueueTimer*>(vtimer);
+    if (timer != m_audioStopTimer) {
+        return;
+    }
+
+    m_events->removeHandler(Event::kTimer, m_audioStopTimer);
+    m_events->deleteTimer(m_audioStopTimer);
+    m_audioStopTimer = NULL;
+
+    stopAudioPlayback();
+    m_hasAudioFormat = false;
 }
 
 void
