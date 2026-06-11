@@ -288,6 +288,13 @@ TCPSocket::getSize() const
     return m_inputBuffer.getSize();
 }
 
+UInt32
+TCPSocket::getOutputSize() const
+{
+    Lock lock(&m_mutex);
+    return m_outputBuffer.getSize();
+}
+
 void
 TCPSocket::connect(const NetworkAddress& addr)
 {

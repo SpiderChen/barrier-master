@@ -36,6 +36,7 @@
 #include "barrier/KeyState.h"
 #include "barrier/Screen.h"
 #include "barrier/PacketStreamFilter.h"
+#include "io/StreamFilter.h"
 #include "net/TCPSocket.h"
 #include "net/IDataSocket.h"
 #include "net/IListenSocket.h"
@@ -69,6 +70,39 @@ public:
     UInt32 m_session;
     AudioChunk* m_chunk;
 };
+
+static const size_t kMaxRealtimeAudioQueuedChunks = 6;
+
+static UInt32
+getQueuedOutputBytes(barrier::IStream* stream)
+{
+	while (stream != NULL) {
+		TCPSocket* socket = dynamic_cast<TCPSocket*>(stream);
+		if (socket != NULL) {
+			return socket->getOutputSize();
+		}
+
+		StreamFilter* filter = dynamic_cast<StreamFilter*>(stream);
+		if (filter == NULL) {
+			return 0;
+		}
+		stream = filter->getStream();
+	}
+
+	return 0;
+}
+
+static bool
+isRealtimeAudioBackedUp(BaseClientProxy* client, UInt8 mark, size_t dataSize)
+{
+	if (mark != kDataChunk || client == NULL || dataSize == 0) {
+		return false;
+	}
+
+	const UInt32 queuedBytes = getQueuedOutputBytes(client->getStream());
+	const size_t maxQueuedBytes = dataSize * kMaxRealtimeAudioQueuedChunks;
+	return queuedBytes >= maxQueuedBytes;
+}
 
 //
 // Server
@@ -2721,6 +2755,11 @@ Server::sendAudioChunkToClient(BaseClientProxy* client, UInt8 mark,
 {
 	if (client == NULL || client == m_primaryClient) {
 		return false;
+	}
+	if (isRealtimeAudioBackedUp(client, mark, dataSize)) {
+		LOG((CLOG_DEBUG2 "dropping stale server audio chunk for client \"%s\"",
+			 getName(client).c_str()));
+		return true;
 	}
 
 	try {

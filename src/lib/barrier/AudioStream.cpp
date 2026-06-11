@@ -578,7 +578,7 @@ public:
     };
 
     enum {
-        kMaxPlaybackQueueBuffers = 12
+        kMaxPlaybackQueueBuffers = 6
     };
 
     Impl() :
@@ -640,8 +640,8 @@ public:
 
         cleanupFinished();
         if (m_pending.size() >= kMaxPlaybackQueueBuffers) {
-            LOG((CLOG_DEBUG "dropping audio chunk because playback queue is full"));
-            return true;
+            LOG((CLOG_NOTE "client audio playback queue is stale; reopening device"));
+            return false;
         }
 
         char* buffer = new char[dataSize];
@@ -886,8 +886,8 @@ public:
         }
 
         if (m_queuedBuffers >= kMaxQueuedBuffers) {
-            LOG((CLOG_DEBUG "dropping audio chunk because playback queue is full"));
-            return true;
+            LOG((CLOG_NOTE "client audio playback queue is stale; reopening device"));
+            return false;
         }
 
         AudioQueueBufferRef buffer = NULL;
@@ -959,7 +959,7 @@ private:
 
 private:
     enum {
-        kMaxQueuedBuffers = 32
+        kMaxQueuedBuffers = 6
     };
 
     AudioQueueRef m_queue;

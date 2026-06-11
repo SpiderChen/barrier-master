@@ -55,6 +55,7 @@ public:
     virtual bool        isReady() const;
     virtual bool        isFatal() const;
     virtual UInt32        getSize() const;
+    UInt32              getOutputSize() const;
 
     // IDataSocket overrides
     virtual void        connect(const NetworkAddress&);
