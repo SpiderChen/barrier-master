@@ -188,7 +188,7 @@ private:
     void                cleanupScreen();
     void                cleanupTimer();
     void                cleanupStream();
-    void                scheduleAudioPlaybackStop();
+    void                scheduleAudioPlaybackStop(double timeout, bool clearFormat);
     void                cancelAudioPlaybackStop();
     void                handleConnected(const Event&, void*);
     void                handleConnectionFailed(const Event&, void*);
@@ -245,6 +245,7 @@ private:
     bool                m_enableClipboard;
     AudioPlayer*        m_audioPlayer;
     EventQueueTimer*    m_audioStopTimer;
+    bool                m_audioStopClearsFormat;
     AudioFormat         m_audioFormat;
     bool                m_hasAudioFormat;
     SInt16              m_serverProtocolMinor;

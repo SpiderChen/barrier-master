@@ -48,6 +48,7 @@
 #include <fstream>
 
 static const double kAudioEndGraceSeconds = 0.75;
+static const double kAudioIdleResetSeconds = 1.25;
 
 static bool
 isSameAudioFormat(const AudioFormat& left, const AudioFormat& right)
@@ -86,6 +87,7 @@ Client::Client(IEventQueue* events, const std::string& name, const NetworkAddres
     m_enableClipboard(true),
     m_audioPlayer(NULL),
     m_audioStopTimer(NULL),
+    m_audioStopClearsFormat(false),
     m_audioFormat(),
     m_hasAudioFormat(false),
     m_serverProtocolMinor(0)
@@ -620,13 +622,15 @@ Client::cleanupStream()
 }
 
 void
-Client::scheduleAudioPlaybackStop()
+Client::scheduleAudioPlaybackStop(double timeout, bool clearFormat)
 {
-    if (m_audioStopTimer != NULL || m_audioPlayer == NULL) {
+    if (m_audioPlayer == NULL) {
         return;
     }
 
-    m_audioStopTimer = m_events->newOneShotTimer(kAudioEndGraceSeconds, NULL);
+    cancelAudioPlaybackStop();
+    m_audioStopClearsFormat = clearFormat;
+    m_audioStopTimer = m_events->newOneShotTimer(timeout, NULL);
     m_events->adoptHandler(Event::kTimer, m_audioStopTimer,
                             new TMethodEventJob<Client>(this,
                                 &Client::handleAudioStopTimeout,
@@ -640,6 +644,7 @@ Client::cancelAudioPlaybackStop()
         m_events->removeHandler(Event::kTimer, m_audioStopTimer);
         m_events->deleteTimer(m_audioStopTimer);
         m_audioStopTimer = NULL;
+        m_audioStopClearsFormat = false;
     }
 }
 
@@ -837,10 +842,11 @@ Client::audioChunkReceived(UInt8 mark, const std::string& data)
             m_audioPlayer->start(m_audioFormat);
             m_audioPlayer->play(data.data(), data.size());
         }
+        scheduleAudioPlaybackStop(kAudioIdleResetSeconds, false);
         break;
 
     case kDataEnd:
-        scheduleAudioPlaybackStop();
+        scheduleAudioPlaybackStop(kAudioEndGraceSeconds, true);
         break;
     }
 }
@@ -904,8 +910,13 @@ Client::handleAudioStopTimeout(const Event&, void* vtimer)
     m_events->deleteTimer(m_audioStopTimer);
     m_audioStopTimer = NULL;
 
+    const bool clearFormat = m_audioStopClearsFormat;
+    m_audioStopClearsFormat = false;
+
     stopAudioPlayback();
-    m_hasAudioFormat = false;
+    if (clearFormat) {
+        m_hasAudioFormat = false;
+    }
 }
 
 void

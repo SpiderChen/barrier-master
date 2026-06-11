@@ -32,6 +32,7 @@ static const UInt16 kSharedAudioBitsPerSample = 16;
 static const size_t kSharedAudioPacketsPerSecond = 10;
 static const double kSharedAudioMaxSendLeadSeconds = 0.20;
 static const double kSharedAudioIdlePollSeconds = 0.050;
+static const double kSharedAudioResumeStartSeconds = 0.35;
 static const UInt32 kSharedAudioDropLogInterval = 50;
 
 static const AudioQualityProfile kAudioQualityProfiles[] = {
@@ -488,6 +489,8 @@ private:
         UINT32 packetFrames = 0;
         UInt32 droppedPackets = 0;
         double nextSendTime = ARCH->time();
+        double lastAudioPacketTime = nextSendTime;
+        bool sendStartOnNextAudio = false;
 
         while (!m_stop) {
             HRESULT hr = captureClient->GetNextPacketSize(&packetFrames);
@@ -499,6 +502,13 @@ private:
             if (packetFrames == 0) {
                 // Silence and paused sources are normal; keep the stream open
                 // so playback resumes without forcing a protocol-level end.
+                const double now = ARCH->time();
+                if (now - lastAudioPacketTime >= kSharedAudioResumeStartSeconds) {
+                    pendingOutput.clear();
+                    nextOutputFrame = 0.0;
+                    nextSendTime = now;
+                    sendStartOnNextAudio = true;
+                }
                 ARCH->sleep(kSharedAudioIdlePollSeconds);
                 continue;
             }
@@ -518,6 +528,14 @@ private:
                 convertToSharedPcm16(data, framesAvailable, mixFormat, outputFormat,
                                      nextOutputFrame, output, silent);
                 if (!output.empty()) {
+                    const double now = ARCH->time();
+                    if (sendStartOnNextAudio ||
+                        now - lastAudioPacketTime >= kSharedAudioResumeStartSeconds) {
+                        // Re-send metadata after an idle gap so clients can reopen playback.
+                        m_callback(AudioChunk::start(outputFormat), m_context);
+                        sendStartOnNextAudio = false;
+                    }
+                    lastAudioPacketTime = now;
                     pendingOutput.insert(pendingOutput.end(), output.begin(), output.end());
                     while (pendingOutput.size() >= packetBytes && !m_stop) {
                         const double now = ARCH->time();
@@ -540,6 +558,15 @@ private:
                             nextSendTime = now;
                         }
                         nextSendTime += 1.0 / kSharedAudioPacketsPerSecond;
+                    }
+                }
+                else if (silent) {
+                    const double now = ARCH->time();
+                    if (now - lastAudioPacketTime >= kSharedAudioResumeStartSeconds) {
+                        pendingOutput.clear();
+                        nextOutputFrame = 0.0;
+                        nextSendTime = now;
+                        sendStartOnNextAudio = true;
                     }
                 }
 
