@@ -31,6 +31,17 @@ FileChunk::FileChunk(size_t size) :
         m_dataSize = size - FILE_CHUNK_META_SIZE;
 }
 
+FileChunkEvent::FileChunkEvent(FileChunk* chunk, const String& targetName) :
+    m_chunk(chunk),
+    m_targetName(targetName)
+{
+}
+
+FileChunkEvent::~FileChunkEvent()
+{
+    delete m_chunk;
+}
+
 FileChunk*
 FileChunk::start(const String& size)
 {

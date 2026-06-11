@@ -21,6 +21,7 @@
 #include "server/Config.h"
 #include "barrier/clipboard_types.h"
 #include "barrier/Clipboard.h"
+#include "barrier/FileChunk.h"
 #include "barrier/FileClipboard.h"
 #include "barrier/key_types.h"
 #include "barrier/mouse_types.h"
@@ -341,7 +342,7 @@ private:
     bool                onMouseMovePrimary(SInt32 x, SInt32 y);
     void                onMouseMoveSecondary(SInt32 dx, SInt32 dy);
     void                onMouseWheel(SInt32 xDelta, SInt32 yDelta);
-    void                onFileChunkSending(const void* data);
+    void                onFileChunkSending(FileChunkEvent* fileEvent);
     void                onFileRecieveCompleted();
     void                onAudioChunkSending(const Event& event);
 
@@ -369,8 +370,8 @@ private:
     void                forceLeaveClient(BaseClientProxy* client);
 
     // thread function for sending file
-    void send_file_thread(String filename);
-    void send_files_thread(FilePathList filenames);
+    void send_file_thread(String filename, String targetName);
+    void send_files_thread(FilePathList filenames, String targetName);
 
     // thread function for writing file to drop directory
     void write_to_drop_dir_thread();
@@ -383,7 +384,7 @@ private:
     void                sendClipboardFilesToActive(const IClipboard* clipboard);
     void                sendFilesToClient(BaseClientProxy* target,
                             const FilePathList& filenames);
-    BaseClientProxy*    getFileTransferTarget() const;
+    BaseClientProxy*    getFileTransferTarget(const String& targetName) const;
     void                setLocalFileClipboard();
 
     // server audio sharing

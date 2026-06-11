@@ -23,6 +23,7 @@
 #include "barrier/Clipboard.h"
 #include "barrier/AudioChunk.h"
 #include "barrier/DragInformation.h"
+#include "barrier/FileChunk.h"
 #include "barrier/FileClipboard.h"
 #include "barrier/INode.h"
 #include "barrier/ClientArgs.h"
@@ -174,7 +175,7 @@ private:
     void                sendClipboard(ClipboardID);
     void                sendEvent(Event::Type, void*);
     void                sendConnectionFailedEvent(const char* msg);
-    void                sendFileChunk(const void* data);
+    void                sendFileChunk(FileChunk* chunk);
     void send_file_thread(String filename);
     void                send_files_thread(FilePathList filenames);
     void write_to_drop_dir_thread();

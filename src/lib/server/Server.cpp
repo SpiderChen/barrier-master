@@ -1575,7 +1575,9 @@ Server::handleFakeInputEndEvent(const Event&, void*)
 void
 Server::handleFileChunkSendingEvent(const Event& event, void*)
 {
-	onFileChunkSending(event.getData());
+	FileChunkEvent* fileEvent =
+		static_cast<FileChunkEvent*>(event.getDataObject());
+	onFileChunkSending(fileEvent);
 }
 
 void
@@ -2136,12 +2138,16 @@ Server::onMouseWheel(SInt32 xDelta, SInt32 yDelta)
 }
 
 void
-Server::onFileChunkSending(const void* data)
+Server::onFileChunkSending(FileChunkEvent* fileEvent)
 {
-	FileChunk* chunk = static_cast<FileChunk*>(const_cast<void*>(data));
+	if (fileEvent == NULL || fileEvent->m_chunk == NULL) {
+		return;
+	}
+
+	FileChunk* chunk = fileEvent->m_chunk;
 
 	LOG((CLOG_DEBUG1 "sending file chunk"));
-	BaseClientProxy* target = getFileTransferTarget();
+	BaseClientProxy* target = getFileTransferTarget(fileEvent->m_targetName);
 	if (target == NULL || target == m_primaryClient) {
 		LOG((CLOG_WARN "dropping file chunk because transfer target is unavailable"));
 		return;
@@ -2149,6 +2155,10 @@ Server::onFileChunkSending(const void* data)
 
 	// relay
 	target->fileChunkSending(chunk->m_chunk[0], &chunk->m_chunk[1], chunk->m_dataSize);
+	if (chunk->m_chunk[0] == kDataEnd &&
+		fileEvent->m_targetName == m_fileTransferTargetName) {
+		m_fileTransferTargetName.clear();
+	}
 }
 
 void
@@ -2531,14 +2541,17 @@ Server::sendFileToClient(const char* filename)
 	}
 
 	m_fileTransferTargetName = getName(m_active);
-	m_sendFileThread = new Thread([this, filenameCopy]() { send_file_thread(filenameCopy); });
+	String targetName = m_fileTransferTargetName;
+	m_sendFileThread = new Thread([this, filenameCopy, targetName]() {
+		send_file_thread(filenameCopy, targetName);
+	});
 }
 
-void Server::send_file_thread(String filename)
+void Server::send_file_thread(String filename, String targetName)
 {
 	try {
 		LOG((CLOG_DEBUG "sending file to client, filename=%s", filename.c_str()));
-		StreamChunker::sendFile(filename.c_str(), m_events, this);
+		StreamChunker::sendFile(filename.c_str(), m_events, this, targetName);
 	}
 	catch (std::runtime_error &error) {
 		LOG((CLOG_ERR "failed sending file chunks, error: %s", error.what()));
@@ -2560,17 +2573,20 @@ Server::sendFilesToClient(BaseClientProxy* target, const FilePathList& filenames
 	}
 
 	m_fileTransferTargetName = getName(target);
-	m_sendFileThread = new Thread([this, filenames]() { send_files_thread(filenames); });
+	String targetName = m_fileTransferTargetName;
+	m_sendFileThread = new Thread([this, filenames, targetName]() {
+		send_files_thread(filenames, targetName);
+	});
 }
 
 void
-Server::send_files_thread(FilePathList filenames)
+Server::send_files_thread(FilePathList filenames, String targetName)
 {
 	try {
 		for (FilePathList::const_iterator index = filenames.begin();
 			 index != filenames.end(); ++index) {
 			LOG((CLOG_DEBUG "sending copied file to client, filename=%s", index->c_str()));
-			StreamChunker::sendFile(index->c_str(), m_events, this);
+			StreamChunker::sendFile(index->c_str(), m_events, this, targetName);
 		}
 	}
 	catch (std::runtime_error &error) {
@@ -2581,16 +2597,17 @@ Server::send_files_thread(FilePathList filenames)
 }
 
 BaseClientProxy*
-Server::getFileTransferTarget() const
+Server::getFileTransferTarget(const String& targetName) const
 {
-	if (m_fileTransferTargetName.empty()) {
+	if (targetName.empty() && m_fileTransferTargetName.empty()) {
 		return m_active;
 	}
 
-	ClientList::const_iterator index = m_clients.find(m_fileTransferTargetName);
+	const String& name = targetName.empty() ? m_fileTransferTargetName : targetName;
+	ClientList::const_iterator index = m_clients.find(name);
 	if (index == m_clients.end()) {
 		LOG((CLOG_WARN "file transfer target \"%s\" is no longer connected",
-			 m_fileTransferTargetName.c_str()));
+			 name.c_str()));
 		return NULL;
 	}
 
@@ -2689,19 +2706,12 @@ Server::hasAudioStreamTarget() const
 void
 Server::sendAudioChunkToClients(UInt8 mark, const char* data, size_t dataSize)
 {
-	if (mark == kDataStart || mark == kDataEnd) {
-		for (ClientList::const_iterator index = m_clients.begin();
-			 index != m_clients.end(); ++index) {
-			BaseClientProxy* client = index->second;
-			if (client != m_primaryClient) {
-				sendAudioChunkToClient(client, mark, data, dataSize);
-			}
+	for (ClientList::const_iterator index = m_clients.begin();
+		 index != m_clients.end(); ++index) {
+		BaseClientProxy* client = index->second;
+		if (client != m_primaryClient) {
+			sendAudioChunkToClient(client, mark, data, dataSize);
 		}
-		return;
-	}
-
-	if (m_active != NULL && m_active != m_primaryClient) {
-		sendAudioChunkToClient(m_active, mark, data, dataSize);
 	}
 }
 

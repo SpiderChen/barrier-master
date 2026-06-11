@@ -34,6 +34,7 @@
 #include <memory>
 
 static const std::size_t MAX_INPUT_BUFFER_SIZE = 1024 * 1024;
+static const std::size_t MAX_OUTPUT_BUFFER_SIZE = 4 * 1024 * 1024;
 
 TCPSocket::TCPSocket(IEventQueue* events, SocketMultiplexer* socketMultiplexer, IArchNetwork::EAddressFamily family) :
     IDataSocket(events),
@@ -170,6 +171,21 @@ TCPSocket::write(const void* buffer, UInt32 n)
 
         // ignore empty writes
         if (n == 0) {
+            return;
+        }
+
+        const std::size_t pendingBytes =
+            static_cast<std::size_t>(m_outputBuffer.getSize()) +
+            static_cast<std::size_t>(n);
+        if (pendingBytes > MAX_OUTPUT_BUFFER_SIZE) {
+            LOG((CLOG_WARN "socket output buffer exceeded %u bytes; closing slow connection",
+                 static_cast<unsigned int>(MAX_OUTPUT_BUFFER_SIZE)));
+            sendEvent(m_events->forIStream().outputError());
+            onOutputShutdown();
+            if (!m_readable) {
+                sendEvent(m_events->forISocket().disconnected());
+                m_connected = false;
+            }
             return;
         }
 

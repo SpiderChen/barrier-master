@@ -42,10 +42,20 @@ bool StreamChunker::s_isChunkingFile = false;
 bool StreamChunker::s_interruptFile = false;
 Mutex* StreamChunker::s_interruptMutex = NULL;
 
+static void
+addFileChunkEvent(IEventQueue* events, void* eventTarget, FileChunk* chunk,
+                  const String& targetName)
+{
+    Event event(events->forFile().fileChunkSending(), eventTarget);
+    event.setDataObject(new FileChunkEvent(chunk, targetName));
+    events->addEvent(event);
+}
+
 void
 StreamChunker::sendFile(const char* filename,
                 IEventQueue* events,
-                void* eventTarget)
+                void* eventTarget,
+                const String& targetName)
 {
     s_isChunkingFile = true;
 
@@ -64,7 +74,7 @@ StreamChunker::sendFile(const char* filename,
     String fileSize = barrier::string::sizeTypeToString(size);
     FileChunk* sizeMessage = FileChunk::start(fileSize);
 
-    events->addEvent(Event(events->forFile().fileChunkSending(), eventTarget, sizeMessage));
+    addFileChunkEvent(events, eventTarget, sizeMessage, targetName);
 
     // send chunk messages with a fixed chunk size
     size_t sentLength = 0;
@@ -91,7 +101,7 @@ StreamChunker::sendFile(const char* filename,
         FileChunk* fileChunk = FileChunk::data(data, chunkSize);
         delete[] chunkData;
 
-        events->addEvent(Event(events->forFile().fileChunkSending(), eventTarget, fileChunk));
+        addFileChunkEvent(events, eventTarget, fileChunk, targetName);
 
         sentLength += chunkSize;
         file.seekg (sentLength, std::ios::beg);
@@ -104,7 +114,7 @@ StreamChunker::sendFile(const char* filename,
     // send last message
     FileChunk* end = FileChunk::end();
 
-    events->addEvent(Event(events->forFile().fileChunkSending(), eventTarget, end));
+    addFileChunkEvent(events, eventTarget, end, targetName);
 
     file.close();
 

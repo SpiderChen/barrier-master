@@ -446,9 +446,12 @@ Client::sendConnectionFailedEvent(const char* msg)
 }
 
 void
-Client::sendFileChunk(const void* data)
+Client::sendFileChunk(FileChunk* chunk)
 {
-    FileChunk* chunk = static_cast<FileChunk*>(const_cast<void*>(data));
+    if (chunk == NULL) {
+        return;
+    }
+
     LOG((CLOG_DEBUG1 "send file chunk"));
     assert(m_server != NULL);
 
@@ -803,7 +806,13 @@ Client::audioChunkReceived(UInt8 mark, const std::string& data)
 void
 Client::handleFileChunkSending(const Event& event, void*)
 {
-    sendFileChunk(event.getData());
+    FileChunkEvent* fileEvent =
+        static_cast<FileChunkEvent*>(event.getDataObject());
+    if (fileEvent == NULL) {
+        return;
+    }
+
+    sendFileChunk(fileEvent->m_chunk);
 }
 
 void

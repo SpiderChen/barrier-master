@@ -18,6 +18,7 @@
 #pragma once
 
 #include "barrier/Chunk.h"
+#include "base/Event.h"
 #include "base/String.h"
 #include "common/basic_types.h"
 
@@ -43,4 +44,13 @@ public:
                             UInt8 mark,
                             char* data,
                             size_t dataSize);
+};
+
+class FileChunkEvent : public EventData {
+public:
+    FileChunkEvent(FileChunk* chunk, const String& targetName = String());
+    ~FileChunkEvent();
+
+    FileChunk* m_chunk;
+    String m_targetName;
 };

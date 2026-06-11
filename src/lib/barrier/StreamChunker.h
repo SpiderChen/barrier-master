@@ -25,7 +25,8 @@ class Mutex;
 
 class StreamChunker {
 public:
-    static void sendFile(const char* filename, IEventQueue* events, void* eventTarget);
+    static void sendFile(const char* filename, IEventQueue* events, void* eventTarget,
+                         const String& targetName = String());
     static void            sendClipboard(
                             String& data,
                             size_t size,
