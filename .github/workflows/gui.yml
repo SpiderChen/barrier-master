@@ -38,7 +38,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install "aqtinstall==$env:AQT_VERSION"
-          python -m aqt install-qt windows desktop "$env:QT_VERSION" win64_msvc2019_64 -O "$env:GITHUB_WORKSPACE\Qt"
+          python -m aqt install-qt windows desktop "$env:QT_VERSION" win64_msvc2019_64 --archives qtbase qttools -O "$env:GITHUB_WORKSPACE\Qt"
           Add-Content -Path $env:GITHUB_ENV -Value "QT_ROOT_DIR=$env:GITHUB_WORKSPACE\Qt\$env:QT_VERSION\msvc2019_64"
 
       - name: Install dependencies
@@ -186,7 +186,7 @@ jobs:
           . "$PWD/.venv-aqt/bin/activate"
           python -m pip install --upgrade pip
           python -m pip install "aqtinstall==${AQT_VERSION}"
-          python -m aqt install-qt mac desktop "${QT_VERSION}" clang_64 -O "$PWD/Qt"
+          python -m aqt install-qt mac desktop "${QT_VERSION}" clang_64 --archives qtbase qttools -O "$PWD/Qt"
           echo "QT_ROOT_DIR=$PWD/Qt/${QT_VERSION}/clang_64" >> "$GITHUB_ENV"
           echo "MACDEPLOYQT=$PWD/Qt/${QT_VERSION}/clang_64/bin/macdeployqt" >> "$GITHUB_ENV"
 
