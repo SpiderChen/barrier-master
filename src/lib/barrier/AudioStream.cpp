@@ -30,6 +30,7 @@ struct AudioQualityProfile {
 
 static const UInt16 kSharedAudioBitsPerSample = 16;
 static const size_t kSharedAudioPacketsPerSecond = 10;
+static const size_t kSharedAudioStartGatePackets = 5;
 static const double kSharedAudioMaxSendLeadSeconds = 0.20;
 static const double kSharedAudioIdlePollSeconds = 0.500;
 static const double kSharedAudioIdleResetSeconds = 0.35;
@@ -506,6 +507,7 @@ private:
         double nextSendTime = ARCH->time();
         double lastAudioPacketTime = nextSendTime;
         bool streamStarted = false;
+        size_t startGatePackets = 0;
 
         while (!m_stop) {
             HRESULT hr = captureClient->GetNextPacketSize(&packetFrames);
@@ -522,6 +524,9 @@ private:
                     pendingOutput.clear();
                     nextOutputFrame = 0.0;
                     nextSendTime = now;
+                    if (!streamStarted) {
+                        startGatePackets = 0;
+                    }
                 }
                 ARCH->sleep(kSharedAudioIdlePollSeconds);
                 continue;
@@ -550,6 +555,9 @@ private:
                     if (now - lastAudioPacketTime >= kSharedAudioIdleResetSeconds) {
                         pendingOutput.clear();
                         nextSendTime = now;
+                        if (!streamStarted) {
+                            startGatePackets = 0;
+                        }
                     }
                     lastAudioPacketTime = now;
                     pendingOutput.insert(pendingOutput.end(), output.begin(), output.end());
@@ -566,6 +574,16 @@ private:
                         }
 
                         if (!streamStarted) {
+                            ++startGatePackets;
+                            if (startGatePackets < kSharedAudioStartGatePackets) {
+                                pendingOutput.erase(pendingOutput.begin(),
+                                                    pendingOutput.begin() + packetBytes);
+                                if (nextSendTime < now) {
+                                    nextSendTime = now;
+                                }
+                                nextSendTime += 1.0 / kSharedAudioPacketsPerSecond;
+                                continue;
+                            }
                             m_callback(AudioChunk::start(outputFormat), m_context);
                             streamStarted = true;
                         }
@@ -586,6 +604,9 @@ private:
                         pendingOutput.clear();
                         nextOutputFrame = 0.0;
                         nextSendTime = now;
+                        if (!streamStarted) {
+                            startGatePackets = 0;
+                        }
                     }
                 }
 
