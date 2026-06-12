@@ -31,8 +31,8 @@ struct AudioQualityProfile {
 static const UInt16 kSharedAudioBitsPerSample = 16;
 static const size_t kSharedAudioPacketsPerSecond = 10;
 static const double kSharedAudioMaxSendLeadSeconds = 0.20;
-static const double kSharedAudioIdlePollSeconds = 0.050;
-static const double kSharedAudioResumeStartSeconds = 0.35;
+static const double kSharedAudioIdlePollSeconds = 0.500;
+static const double kSharedAudioIdleResetSeconds = 0.35;
 static const UInt32 kSharedAudioDropLogInterval = 50;
 
 static const AudioQualityProfile kAudioQualityProfiles[] = {
@@ -177,6 +177,22 @@ writeInt16(std::vector<UInt8>& output, SInt16 sample)
 {
     output.push_back(static_cast<UInt8>(sample & 0xff));
     output.push_back(static_cast<UInt8>((sample >> 8) & 0xff));
+}
+
+static bool
+isSilentPcm(const std::vector<UInt8>& output)
+{
+    if (output.empty()) {
+        return false;
+    }
+
+    for (size_t index = 0; index < output.size(); ++index) {
+        if (output[index] != 0) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 static SInt16
@@ -439,7 +455,6 @@ private:
             audioClientStarted = true;
 
             AudioFormat outputFormat = m_outputFormat;
-            m_callback(AudioChunk::start(outputFormat), m_context);
             captureLoop(captureClient, mixFormat, outputFormat);
         } while (false);
 
@@ -490,7 +505,7 @@ private:
         UInt32 droppedPackets = 0;
         double nextSendTime = ARCH->time();
         double lastAudioPacketTime = nextSendTime;
-        bool sendStartOnNextAudio = false;
+        bool streamStarted = false;
 
         while (!m_stop) {
             HRESULT hr = captureClient->GetNextPacketSize(&packetFrames);
@@ -503,11 +518,10 @@ private:
                 // Silence and paused sources are normal; keep the stream open
                 // so playback resumes without forcing a protocol-level end.
                 const double now = ARCH->time();
-                if (now - lastAudioPacketTime >= kSharedAudioResumeStartSeconds) {
+                if (now - lastAudioPacketTime >= kSharedAudioIdleResetSeconds) {
                     pendingOutput.clear();
                     nextOutputFrame = 0.0;
                     nextSendTime = now;
-                    sendStartOnNextAudio = true;
                 }
                 ARCH->sleep(kSharedAudioIdlePollSeconds);
                 continue;
@@ -527,13 +541,15 @@ private:
                 bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
                 convertToSharedPcm16(data, framesAvailable, mixFormat, outputFormat,
                                      nextOutputFrame, output, silent);
+                if (isSilentPcm(output)) {
+                    output.clear();
+                    silent = true;
+                }
                 if (!output.empty()) {
                     const double now = ARCH->time();
-                    if (sendStartOnNextAudio ||
-                        now - lastAudioPacketTime >= kSharedAudioResumeStartSeconds) {
-                        // Re-send metadata after an idle gap so clients can reopen playback.
-                        m_callback(AudioChunk::start(outputFormat), m_context);
-                        sendStartOnNextAudio = false;
+                    if (now - lastAudioPacketTime >= kSharedAudioIdleResetSeconds) {
+                        pendingOutput.clear();
+                        nextSendTime = now;
                     }
                     lastAudioPacketTime = now;
                     pendingOutput.insert(pendingOutput.end(), output.begin(), output.end());
@@ -549,6 +565,10 @@ private:
                             continue;
                         }
 
+                        if (!streamStarted) {
+                            m_callback(AudioChunk::start(outputFormat), m_context);
+                            streamStarted = true;
+                        }
                         m_callback(AudioChunk::data(&pendingOutput[0],
                                                     packetBytes),
                                    m_context);
@@ -562,11 +582,10 @@ private:
                 }
                 else if (silent) {
                     const double now = ARCH->time();
-                    if (now - lastAudioPacketTime >= kSharedAudioResumeStartSeconds) {
+                    if (now - lastAudioPacketTime >= kSharedAudioIdleResetSeconds) {
                         pendingOutput.clear();
                         nextOutputFrame = 0.0;
                         nextSendTime = now;
-                        sendStartOnNextAudio = true;
                     }
                 }
 

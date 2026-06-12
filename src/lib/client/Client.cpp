@@ -48,7 +48,6 @@
 #include <fstream>
 
 static const double kAudioEndGraceSeconds = 0.75;
-static const double kAudioIdleResetSeconds = 1.25;
 
 static bool
 isSameAudioFormat(const AudioFormat& left, const AudioFormat& right)
@@ -842,7 +841,6 @@ Client::audioChunkReceived(UInt8 mark, const std::string& data)
             m_audioPlayer->start(m_audioFormat);
             m_audioPlayer->play(data.data(), data.size());
         }
-        scheduleAudioPlaybackStop(kAudioIdleResetSeconds, false);
         break;
 
     case kDataEnd:
