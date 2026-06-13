@@ -248,5 +248,6 @@ private:
     bool                m_audioStopClearsFormat;
     AudioFormat         m_audioFormat;
     bool                m_hasAudioFormat;
+    double              m_lastAudioChunkTime;
     SInt16              m_serverProtocolMinor;
 };

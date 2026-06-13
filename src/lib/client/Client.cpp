@@ -48,6 +48,7 @@
 #include <fstream>
 
 static const double kAudioEndGraceSeconds = 0.75;
+static const double kAudioPlaybackReopenIdleSeconds = 2.0;
 
 static bool
 isSameAudioFormat(const AudioFormat& left, const AudioFormat& right)
@@ -89,6 +90,7 @@ Client::Client(IEventQueue* events, const std::string& name, const NetworkAddres
     m_audioStopClearsFormat(false),
     m_audioFormat(),
     m_hasAudioFormat(false),
+    m_lastAudioChunkTime(0.0),
     m_serverProtocolMinor(0)
 {
     assert(m_socketFactory != NULL);
@@ -812,26 +814,42 @@ Client::audioChunkReceived(UInt8 mark, const std::string& data)
 
     switch (mark) {
     case kDataStart: {
+        const double now = ARCH->time();
         AudioFormat format;
         if (!AudioChunk::parseFormat(data, format)) {
             LOG((CLOG_ERR "invalid server audio format metadata"));
             return;
         }
 
+        const bool hadPendingStop = m_audioStopTimer != NULL;
+        const bool resumedAfterIdle =
+            m_lastAudioChunkTime > 0.0 &&
+            now - m_lastAudioChunkTime >= kAudioPlaybackReopenIdleSeconds;
         const bool canReusePlayer =
             m_hasAudioFormat && isSameAudioFormat(m_audioFormat, format) &&
-            m_audioPlayer->isRunning();
+            m_audioPlayer->isRunning() && !hadPendingStop && !resumedAfterIdle;
         cancelAudioPlaybackStop();
         m_audioFormat = format;
         m_hasAudioFormat = true;
         if (!canReusePlayer) {
+            if (resumedAfterIdle) {
+                LOG((CLOG_NOTE "client audio playback resumed after idle; reopening device"));
+            }
             m_audioPlayer->start(format);
         }
+        m_lastAudioChunkTime = now;
         break;
     }
 
-    case kDataChunk:
+    case kDataChunk: {
+        const double now = ARCH->time();
         cancelAudioPlaybackStop();
+        if (m_audioPlayer->isRunning() && m_hasAudioFormat &&
+            m_lastAudioChunkTime > 0.0 &&
+            now - m_lastAudioChunkTime >= kAudioPlaybackReopenIdleSeconds) {
+            LOG((CLOG_NOTE "client audio playback resumed after idle; reopening device"));
+            m_audioPlayer->start(m_audioFormat);
+        }
         if (!m_audioPlayer->isRunning() && m_hasAudioFormat) {
             LOG((CLOG_NOTE "client audio playback was stopped; restarting"));
             m_audioPlayer->start(m_audioFormat);
@@ -841,9 +859,12 @@ Client::audioChunkReceived(UInt8 mark, const std::string& data)
             m_audioPlayer->start(m_audioFormat);
             m_audioPlayer->play(data.data(), data.size());
         }
+        m_lastAudioChunkTime = now;
         break;
+    }
 
     case kDataEnd:
+        m_lastAudioChunkTime = 0.0;
         scheduleAudioPlaybackStop(kAudioEndGraceSeconds, true);
         break;
     }

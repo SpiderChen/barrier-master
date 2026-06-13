@@ -34,6 +34,8 @@ static const double kSharedAudioMaxSendLeadSeconds = 0.20;
 static const double kSharedAudioActivePollSeconds = 0.050;
 static const double kSharedAudioIdlePollSeconds = 0.500;
 static const double kSharedAudioIdleResetSeconds = 1.25;
+static const double kSharedAudioDeviceRefreshSeconds = 5.0;
+static const double kSharedAudioDeviceRetrySeconds = 1.0;
 static const UInt32 kSharedAudioDropLogInterval = 50;
 
 static const AudioQualityProfile kAudioQualityProfiles[] = {
@@ -397,90 +399,95 @@ private:
             return;
         }
 
-        IMMDeviceEnumerator* enumerator = NULL;
-        IMMDevice* device = NULL;
-        IAudioClient* audioClient = NULL;
-        IAudioCaptureClient* captureClient = NULL;
-        WAVEFORMATEX* mixFormat = NULL;
-        bool audioClientStarted = false;
+        while (!m_stop) {
+            IMMDeviceEnumerator* enumerator = NULL;
+            IMMDevice* device = NULL;
+            IAudioClient* audioClient = NULL;
+            IAudioCaptureClient* captureClient = NULL;
+            WAVEFORMATEX* mixFormat = NULL;
+            bool audioClientStarted = false;
 
-        do {
-            hr = coCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL,
-                                  __uuidof(IMMDeviceEnumerator),
-                                  reinterpret_cast<void**>(&enumerator));
-            if (FAILED(hr)) {
-                LOG((CLOG_ERR "server audio sharing unavailable: CoCreateInstance failed 0x%08x", hr));
-                break;
+            do {
+                hr = coCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL,
+                                      __uuidof(IMMDeviceEnumerator),
+                                      reinterpret_cast<void**>(&enumerator));
+                if (FAILED(hr)) {
+                    LOG((CLOG_ERR "server audio sharing unavailable: CoCreateInstance failed 0x%08x", hr));
+                    break;
+                }
+
+                hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
+                if (FAILED(hr)) {
+                    LOG((CLOG_ERR "server audio sharing unavailable: default render endpoint failed 0x%08x", hr));
+                    break;
+                }
+
+                hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, NULL,
+                                      reinterpret_cast<void**>(&audioClient));
+                if (FAILED(hr)) {
+                    LOG((CLOG_ERR "server audio sharing unavailable: audio client activation failed 0x%08x", hr));
+                    break;
+                }
+
+                hr = audioClient->GetMixFormat(&mixFormat);
+                if (FAILED(hr)) {
+                    LOG((CLOG_ERR "server audio sharing unavailable: GetMixFormat failed 0x%08x", hr));
+                    break;
+                }
+
+                const REFERENCE_TIME bufferDuration = 10000000;
+                hr = audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED,
+                                             AUDCLNT_STREAMFLAGS_LOOPBACK,
+                                             bufferDuration, 0, mixFormat, NULL);
+                if (FAILED(hr)) {
+                    LOG((CLOG_ERR "server audio sharing unavailable: loopback Initialize failed 0x%08x", hr));
+                    break;
+                }
+
+                hr = audioClient->GetService(__uuidof(IAudioCaptureClient),
+                                             reinterpret_cast<void**>(&captureClient));
+                if (FAILED(hr)) {
+                    LOG((CLOG_ERR "server audio sharing unavailable: GetService failed 0x%08x", hr));
+                    break;
+                }
+
+                hr = audioClient->Start();
+                if (FAILED(hr)) {
+                    LOG((CLOG_ERR "server audio sharing unavailable: audio client Start failed 0x%08x", hr));
+                    break;
+                }
+                audioClientStarted = true;
+
+                AudioFormat outputFormat = m_outputFormat;
+                captureLoop(captureClient, mixFormat, outputFormat);
+            } while (false);
+
+            if (audioClientStarted) {
+                audioClient->Stop();
+            }
+            if (mixFormat != NULL) {
+                coTaskMemFree(mixFormat);
+            }
+            if (captureClient != NULL) {
+                captureClient->Release();
+            }
+            if (audioClient != NULL) {
+                audioClient->Release();
+            }
+            if (device != NULL) {
+                device->Release();
+            }
+            if (enumerator != NULL) {
+                enumerator->Release();
             }
 
-            hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
-            if (FAILED(hr)) {
-                LOG((CLOG_ERR "server audio sharing unavailable: default render endpoint failed 0x%08x", hr));
-                break;
+            if (!m_stop) {
+                ARCH->sleep(kSharedAudioDeviceRetrySeconds);
             }
-
-            hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, NULL,
-                                  reinterpret_cast<void**>(&audioClient));
-            if (FAILED(hr)) {
-                LOG((CLOG_ERR "server audio sharing unavailable: audio client activation failed 0x%08x", hr));
-                break;
-            }
-
-            hr = audioClient->GetMixFormat(&mixFormat);
-            if (FAILED(hr)) {
-                LOG((CLOG_ERR "server audio sharing unavailable: GetMixFormat failed 0x%08x", hr));
-                break;
-            }
-
-            const REFERENCE_TIME bufferDuration = 10000000;
-            hr = audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED,
-                                         AUDCLNT_STREAMFLAGS_LOOPBACK,
-                                         bufferDuration, 0, mixFormat, NULL);
-            if (FAILED(hr)) {
-                LOG((CLOG_ERR "server audio sharing unavailable: loopback Initialize failed 0x%08x", hr));
-                break;
-            }
-
-            hr = audioClient->GetService(__uuidof(IAudioCaptureClient),
-                                         reinterpret_cast<void**>(&captureClient));
-            if (FAILED(hr)) {
-                LOG((CLOG_ERR "server audio sharing unavailable: GetService failed 0x%08x", hr));
-                break;
-            }
-
-            hr = audioClient->Start();
-            if (FAILED(hr)) {
-                LOG((CLOG_ERR "server audio sharing unavailable: audio client Start failed 0x%08x", hr));
-                break;
-            }
-            audioClientStarted = true;
-
-            AudioFormat outputFormat = m_outputFormat;
-            captureLoop(captureClient, mixFormat, outputFormat);
-        } while (false);
-
-        if (audioClientStarted) {
-            audioClient->Stop();
-        }
-        if (mixFormat != NULL) {
-            coTaskMemFree(mixFormat);
-        }
-        if (captureClient != NULL) {
-            captureClient->Release();
-        }
-        if (audioClient != NULL) {
-            audioClient->Release();
-        }
-        if (device != NULL) {
-            device->Release();
-        }
-        if (enumerator != NULL) {
-            enumerator->Release();
         }
 
         coUninitialize();
         FreeLibrary(ole32);
-        notifyStreamEnded();
         m_running = false;
     }
 
@@ -511,7 +518,7 @@ private:
         while (!m_stop) {
             HRESULT hr = captureClient->GetNextPacketSize(&packetFrames);
             if (FAILED(hr)) {
-                LOG((CLOG_ERR "server audio sharing stopped: GetNextPacketSize failed 0x%08x", hr));
+                LOG((CLOG_ERR "server audio sharing restarting capture: GetNextPacketSize failed 0x%08x", hr));
                 return;
             }
 
@@ -525,6 +532,10 @@ private:
                     nextOutputFrame = 0.0;
                     nextSendTime = now;
                 }
+                if (now - lastAudioPacketTime >= kSharedAudioDeviceRefreshSeconds) {
+                    LOG((CLOG_NOTE "server audio sharing refreshing idle output device"));
+                    return;
+                }
                 ARCH->sleep(idle ? kSharedAudioIdlePollSeconds :
                                    kSharedAudioActivePollSeconds);
                 continue;
@@ -537,7 +548,7 @@ private:
 
                 hr = captureClient->GetBuffer(&data, &framesAvailable, &flags, NULL, NULL);
                 if (FAILED(hr)) {
-                    LOG((CLOG_ERR "server audio sharing stopped: GetBuffer failed 0x%08x", hr));
+                    LOG((CLOG_ERR "server audio sharing restarting capture: GetBuffer failed 0x%08x", hr));
                     return;
                 }
 
@@ -596,7 +607,7 @@ private:
 
                 hr = captureClient->GetNextPacketSize(&packetFrames);
                 if (FAILED(hr)) {
-                    LOG((CLOG_ERR "server audio sharing stopped: GetNextPacketSize failed 0x%08x", hr));
+                    LOG((CLOG_ERR "server audio sharing restarting capture: GetNextPacketSize failed 0x%08x", hr));
                     return;
                 }
             }
