@@ -844,6 +844,14 @@ Client::audioChunkReceived(UInt8 mark, const std::string& data)
     case kDataChunk: {
         const double now = ARCH->time();
         cancelAudioPlaybackStop();
+        if (data.empty()) {
+            if (!m_audioPlayer->isRunning() && m_hasAudioFormat) {
+                LOG((CLOG_NOTE "client audio playback keepalive restarted device"));
+                m_audioPlayer->start(m_audioFormat);
+            }
+            m_lastAudioChunkTime = now;
+            break;
+        }
         if (m_audioPlayer->isRunning() && m_hasAudioFormat &&
             m_lastAudioChunkTime > 0.0 &&
             now - m_lastAudioChunkTime >= kAudioPlaybackReopenIdleSeconds) {

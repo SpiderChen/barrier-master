@@ -31,6 +31,7 @@ struct AudioQualityProfile {
 static const UInt16 kSharedAudioBitsPerSample = 16;
 static const size_t kSharedAudioPacketsPerSecond = 10;
 static const double kSharedAudioMaxSendLeadSeconds = 0.20;
+static const double kSharedAudioSilenceHeartbeatSeconds = 0.50;
 static const double kSharedAudioActivePollSeconds = 0.050;
 static const double kSharedAudioIdlePollSeconds = 0.500;
 static const double kSharedAudioIdleResetSeconds = 1.25;
@@ -513,7 +514,9 @@ private:
         UInt32 droppedPackets = 0;
         double nextSendTime = ARCH->time();
         double lastAudioPacketTime = nextSendTime;
-        bool streamStarted = false;
+        double nextHeartbeatTime = nextSendTime + kSharedAudioSilenceHeartbeatSeconds;
+
+        m_callback(AudioChunk::start(outputFormat), m_context);
 
         while (!m_stop) {
             HRESULT hr = captureClient->GetNextPacketSize(&packetFrames);
@@ -526,6 +529,19 @@ private:
                 // Silence and paused sources are normal; keep the stream open
                 // so playback resumes without forcing a protocol-level end.
                 const double now = ARCH->time();
+                if (!pendingOutput.empty()) {
+                    m_callback(AudioChunk::data(&pendingOutput[0],
+                                                pendingOutput.size()),
+                               m_context);
+                    pendingOutput.clear();
+                    nextSendTime = now;
+                    nextHeartbeatTime = now + kSharedAudioSilenceHeartbeatSeconds;
+                }
+                else if (now >= nextHeartbeatTime) {
+                    m_callback(AudioChunk::data(NULL, 0), m_context);
+                    nextHeartbeatTime = now + kSharedAudioSilenceHeartbeatSeconds;
+                }
+
                 const bool idle = now - lastAudioPacketTime >= kSharedAudioIdleResetSeconds;
                 if (idle) {
                     pendingOutput.clear();
@@ -579,13 +595,10 @@ private:
                             continue;
                         }
 
-                        if (!streamStarted) {
-                            m_callback(AudioChunk::start(outputFormat), m_context);
-                            streamStarted = true;
-                        }
                         m_callback(AudioChunk::data(&pendingOutput[0],
                                                     packetBytes),
                                    m_context);
+                        nextHeartbeatTime = now + kSharedAudioSilenceHeartbeatSeconds;
                         pendingOutput.erase(pendingOutput.begin(),
                                             pendingOutput.begin() + packetBytes);
                         if (nextSendTime < now) {
@@ -596,6 +609,19 @@ private:
                 }
                 else if (silent) {
                     const double now = ARCH->time();
+                    if (!pendingOutput.empty()) {
+                        m_callback(AudioChunk::data(&pendingOutput[0],
+                                                    pendingOutput.size()),
+                                   m_context);
+                        pendingOutput.clear();
+                        nextSendTime = now;
+                        nextHeartbeatTime = now + kSharedAudioSilenceHeartbeatSeconds;
+                    }
+                    else if (now >= nextHeartbeatTime) {
+                        m_callback(AudioChunk::data(NULL, 0), m_context);
+                        nextHeartbeatTime = now + kSharedAudioSilenceHeartbeatSeconds;
+                    }
+
                     if (now - lastAudioPacketTime >= kSharedAudioIdleResetSeconds) {
                         pendingOutput.clear();
                         nextOutputFrame = 0.0;

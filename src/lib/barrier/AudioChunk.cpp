@@ -57,7 +57,9 @@ AudioChunk::data(const UInt8* data, size_t dataSize)
     AudioChunk* chunk = new AudioChunk(dataSize + AUDIO_CHUNK_META_SIZE);
     char* chunkData = chunk->m_chunk;
     chunkData[0] = kDataChunk;
-    memcpy(&chunkData[1], data, dataSize);
+    if (data != NULL && dataSize > 0) {
+        memcpy(&chunkData[1], data, dataSize);
+    }
     chunkData[dataSize + 1] = '\0';
 
     return chunk;
