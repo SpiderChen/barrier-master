@@ -51,10 +51,10 @@
 		<ComponentGroup Directory="INSTALLFOLDER" Id="ProductComponents">
 			<Component Guid="EC9AD3B0-277C-4157-B5C8-5FD5B6A5F4AD" Id="Core">
 				<File KeyPath="yes" Source="$(var.BinPath)/barrierd.exe"/>
-				<ServiceInstall Description="Controls the $(var.Name) foreground processes." DisplayName="$(var.Name)" ErrorControl="normal" Id="ServiceInstall" Name="Barrier" Start="auto" Type="ownProcess">
+				<ServiceInstall Description="Controls the $(var.Name) foreground processes." DisplayName="$(var.Name)" ErrorControl="normal" Id="ServiceInstall" Name="Barrier" Start="demand" Type="ownProcess">
 					<util:ServiceConfig FirstFailureActionType="restart" ResetPeriodInDays="1" RestartServiceDelayInSeconds="1" SecondFailureActionType="restart" ThirdFailureActionType="restart"/>
 				</ServiceInstall>
-				<ServiceControl Id="ServiceControl" Name="Barrier" Remove="uninstall" Start="install" Stop="both"/>
+				<ServiceControl Id="ServiceControl" Name="Barrier" Remove="uninstall" Stop="both"/>
 				<File Source="$(var.BinPath)/barriers.exe">
 					<fire:FirewallException Id="ServerFirewallException" IgnoreFailure="yes" Name="$(var.Name)" Scope="any"/>
 				</File>

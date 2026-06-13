@@ -95,7 +95,7 @@ ArchDaemonWindows::installDaemon(const char* name,
         name,
         0,
         SERVICE_WIN32_OWN_PROCESS | SERVICE_INTERACTIVE_PROCESS,
-        SERVICE_AUTO_START,
+        SERVICE_DEMAND_START,
         SERVICE_ERROR_NORMAL,
         pathname,
         NULL,
@@ -111,6 +111,30 @@ ArchDaemonWindows::installDaemon(const char* name,
             CloseServiceHandle(mgr);
             throw XArchDaemonInstallFailed(new XArchEvalWindows(err));
         }
+        service = OpenService(mgr, name, SERVICE_CHANGE_CONFIG);
+        if (service == NULL) {
+            err = GetLastError();
+            CloseServiceHandle(mgr);
+            throw XArchDaemonInstallFailed(new XArchEvalWindows(err));
+        }
+        if (!ChangeServiceConfig(
+                service,
+                SERVICE_NO_CHANGE,
+                SERVICE_DEMAND_START,
+                SERVICE_NO_CHANGE,
+                pathname,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                name)) {
+            err = GetLastError();
+            CloseServiceHandle(service);
+            CloseServiceHandle(mgr);
+            throw XArchDaemonInstallFailed(new XArchEvalWindows(err));
+        }
+        CloseServiceHandle(service);
     }
     else {
         // done with service (but only try to close if not null)
@@ -690,8 +714,6 @@ ArchDaemonWindows::installDaemon()
 
         installDaemon(DEFAULT_DAEMON_NAME, DEFAULT_DAEMON_INFO, ss.str().c_str(), "", "");
     }
-
-    start(DEFAULT_DAEMON_NAME);
 }
 
 void
