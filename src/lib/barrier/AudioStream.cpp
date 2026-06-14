@@ -535,8 +535,8 @@ private:
                 }
 
                 const double sleepSeconds =
-                    std::min(kSharedAudioActivePollSeconds,
-                             std::max(0.0, nextSendTime - ARCH->time()));
+                    (std::min)(kSharedAudioActivePollSeconds,
+                               (std::max)(0.0, nextSendTime - ARCH->time()));
                 if (sleepSeconds > 0.0) {
                     ARCH->sleep(sleepSeconds);
                 }
