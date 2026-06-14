@@ -337,7 +337,14 @@ ArchTaskBarWindows::processDialogs(MSG* msg)
     ARCH->lockMutex(m_mutex);
 
     // remove removed dialogs
-    m_dialogs.erase(false);
+    for (Dialogs::iterator index = m_dialogs.begin(); index != m_dialogs.end(); ) {
+        if (!index->second) {
+            index = m_dialogs.erase(index);
+        }
+        else {
+            ++index;
+        }
+    }
 
     // merge added dialogs into the dialog list
     for (Dialogs::const_iterator index = m_addedDialogs.begin();

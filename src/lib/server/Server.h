@@ -35,6 +35,7 @@
 #include "common/stdset.h"
 #include "common/stdvector.h"
 
+#include <atomic>
 #include <mutex>
 
 class BaseClientProxy;
@@ -515,7 +516,7 @@ private:
     bool                m_waitDragInfoThread;
 
     AudioSource*        m_audioSource;
-    UInt32              m_audioSession;
+    std::atomic<UInt32> m_audioSession;
     EventQueueTimer*    m_audioStartTimer;
     AudioChunk*         m_pendingAudioChunk;
     bool                m_audioChunkEventPending;

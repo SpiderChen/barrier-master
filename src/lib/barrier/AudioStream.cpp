@@ -33,6 +33,7 @@ static const size_t kSharedAudioPacketsPerSecond = 50;
 static const size_t kSharedAudioMaxPendingPackets = 5;
 static const double kSharedAudioMaxSendLeadSeconds = 0.12;
 static const double kSharedAudioActivePollSeconds = 0.010;
+static const double kSharedAudioPartialFlushSeconds = 0.040;
 static const double kSharedAudioDeviceRetrySeconds = 1.0;
 static const double kSharedAudioPlaybackQueueStallSeconds = 0.50;
 static const UInt32 kSharedAudioDropLogInterval = 50;
@@ -500,6 +501,7 @@ private:
         std::vector<UInt8> pendingOutput;
         std::vector<UInt8> silencePacket(packetBytes, 0);
         double nextOutputFrame = 0.0;
+        double pendingOutputStartTime = 0.0;
         UINT32 packetFrames = 0;
         UInt32 droppedPackets = 0;
         double nextSendTime = ARCH->time();
@@ -538,19 +540,37 @@ private:
             if (packetFrames == 0) {
                 const double now = ARCH->time();
                 if (!pendingOutput.empty()) {
-                    if (pendingOutput.size() < packetBytes) {
-                        pendingOutput.resize(packetBytes, 0);
+                    // WASAPI loopback can expose periods shorter than our network packet.
+                    // Wait briefly for the next period before padding the tail with silence.
+                    if (pendingOutputStartTime == 0.0) {
+                        pendingOutputStartTime = now;
                     }
-                    sendRealtimeChunk(&pendingOutput[0], packetBytes);
-                    pendingOutput.clear();
+                    if (now - pendingOutputStartTime >= kSharedAudioPartialFlushSeconds) {
+                        if (pendingOutput.size() < packetBytes) {
+                            pendingOutput.resize(packetBytes, 0);
+                        }
+                        sendRealtimeChunk(&pendingOutput[0], packetBytes);
+                        pendingOutput.erase(pendingOutput.begin(),
+                                            pendingOutput.begin() + packetBytes);
+                        pendingOutputStartTime =
+                            pendingOutput.empty() ? 0.0 : ARCH->time();
+                    }
                 }
                 else if (now >= nextSendTime) {
                     sendRealtimeChunk(&silencePacket[0], silencePacket.size());
                 }
 
-                const double sleepSeconds =
-                    (std::min)(kSharedAudioActivePollSeconds,
-                               (std::max)(0.0, nextSendTime - ARCH->time()));
+                double sleepSeconds = 0.0;
+                const double sleepNow = ARCH->time();
+                if (!pendingOutput.empty() && pendingOutputStartTime > 0.0) {
+                    sleepSeconds = (std::min)(kSharedAudioActivePollSeconds,
+                        (std::max)(0.0, pendingOutputStartTime +
+                                   kSharedAudioPartialFlushSeconds - sleepNow));
+                }
+                else {
+                    sleepSeconds = (std::min)(kSharedAudioActivePollSeconds,
+                        (std::max)(0.0, nextSendTime - sleepNow));
+                }
                 if (sleepSeconds > 0.0) {
                     ARCH->sleep(sleepSeconds);
                 }
@@ -578,6 +598,9 @@ private:
                 }
 
                 if (!output.empty()) {
+                    if (pendingOutput.empty()) {
+                        pendingOutputStartTime = ARCH->time();
+                    }
                     pendingOutput.insert(pendingOutput.end(), output.begin(), output.end());
                     const size_t maxPendingBytes = packetBytes * kSharedAudioMaxPendingPackets;
                     if (pendingOutput.size() > maxPendingBytes) {
@@ -587,6 +610,8 @@ private:
                         if (dropBytes > 0) {
                             pendingOutput.erase(pendingOutput.begin(),
                                                 pendingOutput.begin() + dropBytes);
+                            pendingOutputStartTime =
+                                pendingOutput.empty() ? 0.0 : ARCH->time();
                             nextSendTime = ARCH->time();
                             ++droppedPackets;
                             if ((droppedPackets % kSharedAudioDropLogInterval) == 1) {
@@ -599,6 +624,8 @@ private:
                         if (nextSendTime > now + kSharedAudioMaxSendLeadSeconds) {
                             pendingOutput.erase(pendingOutput.begin(),
                                                 pendingOutput.begin() + packetBytes);
+                            pendingOutputStartTime =
+                                pendingOutput.empty() ? 0.0 : ARCH->time();
                             ++droppedPackets;
                             if ((droppedPackets % kSharedAudioDropLogInterval) == 1) {
                                 LOG((CLOG_NOTE "server audio sharing dropped stale queued audio"));
@@ -609,6 +636,8 @@ private:
                         sendRealtimeChunk(&pendingOutput[0], packetBytes);
                         pendingOutput.erase(pendingOutput.begin(),
                                             pendingOutput.begin() + packetBytes);
+                        pendingOutputStartTime =
+                            pendingOutput.empty() ? 0.0 : ARCH->time();
                     }
                 }
 
@@ -647,8 +676,8 @@ public:
     };
 
     enum {
-        kPlaybackPrebufferBuffers = 5,
-        kMaxPlaybackQueueBuffers = 20
+        kPlaybackPrebufferBuffers = 8,
+        kMaxPlaybackQueueBuffers = 30
     };
 
     Impl() :

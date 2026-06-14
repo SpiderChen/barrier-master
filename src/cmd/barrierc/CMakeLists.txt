@@ -21,9 +21,11 @@ set(sources
 if (WIN32)
     file(GLOB arch_headers "MSWindows*.h")
     file(GLOB arch_sources "MSWindows*.cpp")
-    list(APPEND sources
-        barrierc.rc
-        barrierc.exe.manifest)
+    if (MSVC)
+        list(APPEND sources
+            barrierc.rc
+            barrierc.exe.manifest)
+    endif()
 elseif (APPLE)
     file(GLOB arch_headers "OSX*.h")
     file(GLOB arch_sources "OSX*.cpp")
@@ -40,8 +42,17 @@ if (BARRIER_ADD_HEADERS)
 endif()
 
 add_executable(barrierc ${sources})
-target_link_libraries(barrierc
-    arch base client common io mt net ipc platform server synlib ${libs} ${OPENSSL_LIBS})
+if (MINGW)
+    target_link_libraries(barrierc
+        -static-libgcc -static-libstdc++
+        "-Wl,--start-group"
+        synlib server platform client common io ipc mt net arch base
+        "-Wl,--end-group"
+        ${libs} ${OPENSSL_LIBS})
+else()
+    target_link_libraries(barrierc
+        arch base client common io mt net ipc platform server synlib ${libs} ${OPENSSL_LIBS})
+endif()
 
 if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     install (TARGETS barrierc DESTINATION ${BARRIER_BUNDLE_BINARY_DIR})

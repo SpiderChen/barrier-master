@@ -287,21 +287,38 @@ if (UNIX)
     endif()
 
 elseif (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
-    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP /D _BIND_TO_CURRENT_VCLIBS_VERSION=1")
-    set (CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MD /O2 /Ob2")
+    if (MSVC)
+        set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP /D _BIND_TO_CURRENT_VCLIBS_VERSION=1")
+        set (CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MD /O2 /Ob2")
+        list (APPEND libs comsuppw)
+        add_definitions (
+            /DSYSAPI_WIN32=1
+            /DWINAPI_MSWINDOWS=1
+            /D_SILENCE_TR1_NAMESPACE_DEPRECATION_WARNING=1  # tr1 is used from gtest and gmock
+            /DWIN32
+            /D_WINDOWS
+            /D_CRT_SECURE_NO_WARNINGS
+            /DBARRIER_VERSION=\"${BARRIER_VERSION}\"
+            /D_XKEYCHECK_H
+        )
+    else()
+        add_definitions (
+            -DSYSAPI_WIN32=1
+            -DWINAPI_MSWINDOWS=1
+            -D_SILENCE_TR1_NAMESPACE_DEPRECATION_WARNING=1
+            -DWIN32
+            -D_WINDOWS
+            -D_CRT_SECURE_NO_WARNINGS
+            -DBARRIER_VERSION=\"${BARRIER_VERSION}\"
+            -D_XKEYCHECK_H
+        )
+    endif()
 
-    list (APPEND libs Wtsapi32 Userenv Wininet comsuppw Shlwapi)
-
-    add_definitions (
-        /DSYSAPI_WIN32=1
-        /DWINAPI_MSWINDOWS=1
-        /D_SILENCE_TR1_NAMESPACE_DEPRECATION_WARNING=1  # tr1 is used from gtest and gmock
-        /DWIN32
-        /D_WINDOWS
-        /D_CRT_SECURE_NO_WARNINGS
-        /DBARRIER_VERSION=\"${BARRIER_VERSION}\"
-        /D_XKEYCHECK_H
-    )
+    if (MSVC)
+        list (APPEND libs Wtsapi32 Userenv Wininet Shlwapi)
+    else()
+        list (APPEND libs wtsapi32 userenv wininet shlwapi ws2_32)
+    endif()
 endif()
 
 include_directories("${CMAKE_SOURCE_DIR}/ext/gulrak-filesystem/include")

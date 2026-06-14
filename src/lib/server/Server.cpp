@@ -2205,7 +2205,7 @@ Server::onAudioChunkSending(const Event& event)
 	if (audioEvent == NULL) {
 		return;
 	}
-	if (audioEvent->m_session != m_audioSession) {
+	if (audioEvent->m_session != m_audioSession.load()) {
 		return;
 	}
 
@@ -2668,16 +2668,8 @@ Server::queueAudioChunk(AudioChunk* chunk)
 		return;
 	}
 
-	UInt8 mark = chunk->m_chunk[0];
-	if (mark != kDataChunk) {
-		Event event(m_events->forAudio().audioChunkSending(), this);
-		event.setDataObject(new ServerAudioChunkEvent(m_audioSession, chunk));
-		m_events->addEvent(event);
-		return;
-	}
-
 	Event event(m_events->forAudio().audioChunkSending(), this);
-	event.setDataObject(new ServerAudioChunkEvent(m_audioSession, chunk));
+	event.setDataObject(new ServerAudioChunkEvent(m_audioSession.load(), chunk));
 	m_events->addEvent(event);
 }
 
