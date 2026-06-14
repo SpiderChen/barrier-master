@@ -29,12 +29,12 @@ struct AudioQualityProfile {
 };
 
 static const UInt16 kSharedAudioBitsPerSample = 16;
-static const size_t kSharedAudioPacketsPerSecond = 10;
-static const size_t kSharedAudioMaxPendingPackets = 3;
-static const double kSharedAudioMaxSendLeadSeconds = 0.20;
-static const double kSharedAudioActivePollSeconds = 0.050;
+static const size_t kSharedAudioPacketsPerSecond = 50;
+static const size_t kSharedAudioMaxPendingPackets = 5;
+static const double kSharedAudioMaxSendLeadSeconds = 0.12;
+static const double kSharedAudioActivePollSeconds = 0.010;
 static const double kSharedAudioDeviceRetrySeconds = 1.0;
-static const double kSharedAudioPlaybackQueueStallSeconds = 1.0;
+static const double kSharedAudioPlaybackQueueStallSeconds = 0.50;
 static const UInt32 kSharedAudioDropLogInterval = 50;
 
 static const AudioQualityProfile kAudioQualityProfiles[] = {
@@ -647,8 +647,8 @@ public:
     };
 
     enum {
-        kPlaybackPrebufferBuffers = 3,
-        kMaxPlaybackQueueBuffers = 12
+        kPlaybackPrebufferBuffers = 5,
+        kMaxPlaybackQueueBuffers = 20
     };
 
     Impl() :
