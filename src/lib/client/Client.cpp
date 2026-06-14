@@ -48,8 +48,6 @@
 #include <fstream>
 
 static const double kAudioEndGraceSeconds = 0.75;
-static const double kAudioPlaybackIdleStopSeconds = 3.0;
-static const double kAudioPlaybackReopenIdleSeconds = 2.0;
 
 static bool
 isSameAudioFormat(const AudioFormat& left, const AudioFormat& right)
@@ -822,43 +820,26 @@ Client::audioChunkReceived(UInt8 mark, const std::string& data)
             return;
         }
 
-        const bool hadPendingStop = m_audioStopTimer != NULL;
-        const bool resumedAfterIdle =
-            m_lastAudioChunkTime > 0.0 &&
-            now - m_lastAudioChunkTime >= kAudioPlaybackReopenIdleSeconds;
         cancelAudioPlaybackStop();
         const bool formatChanged =
             !m_hasAudioFormat || !isSameAudioFormat(m_audioFormat, format);
-        if ((formatChanged || hadPendingStop || resumedAfterIdle) &&
-            m_audioPlayer->isRunning()) {
-            if (resumedAfterIdle) {
-                LOG((CLOG_NOTE "client audio playback resumed after idle; reopening device"));
-            }
+        if (formatChanged && m_audioPlayer->isRunning()) {
             m_audioPlayer->stop();
         }
         m_audioFormat = format;
         m_hasAudioFormat = true;
+        m_lastAudioChunkTime = now;
         break;
     }
 
     case kDataChunk: {
         const double now = ARCH->time();
+        cancelAudioPlaybackStop();
         if (data.empty()) {
-            if (m_audioPlayer->isRunning() && m_audioStopTimer == NULL) {
-                scheduleAudioPlaybackStop(kAudioPlaybackIdleStopSeconds, false);
-            }
+            m_lastAudioChunkTime = now;
             break;
         }
 
-        const bool hadPendingStop = m_audioStopTimer != NULL;
-        cancelAudioPlaybackStop();
-        if (!hadPendingStop &&
-            m_audioPlayer->isRunning() && m_hasAudioFormat &&
-            m_lastAudioChunkTime > 0.0 &&
-            now - m_lastAudioChunkTime >= kAudioPlaybackReopenIdleSeconds) {
-            LOG((CLOG_NOTE "client audio playback resumed after idle; reopening device"));
-            m_audioPlayer->start(m_audioFormat);
-        }
         if (!m_audioPlayer->isRunning() && m_hasAudioFormat) {
             LOG((CLOG_NOTE "client audio playback was stopped; restarting"));
             m_audioPlayer->start(m_audioFormat);
@@ -869,9 +850,6 @@ Client::audioChunkReceived(UInt8 mark, const std::string& data)
             m_audioPlayer->play(data.data(), data.size());
         }
         m_lastAudioChunkTime = now;
-        if (m_audioPlayer->isRunning()) {
-            scheduleAudioPlaybackStop(kAudioPlaybackIdleStopSeconds, false);
-        }
         break;
     }
 

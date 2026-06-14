@@ -31,11 +31,7 @@ struct AudioQualityProfile {
 static const UInt16 kSharedAudioBitsPerSample = 16;
 static const size_t kSharedAudioPacketsPerSecond = 10;
 static const double kSharedAudioMaxSendLeadSeconds = 0.20;
-static const double kSharedAudioSilenceHeartbeatSeconds = 0.50;
 static const double kSharedAudioActivePollSeconds = 0.050;
-static const double kSharedAudioIdlePollSeconds = 0.500;
-static const double kSharedAudioIdleResetSeconds = 1.25;
-static const double kSharedAudioDeviceRefreshSeconds = 5.0;
 static const double kSharedAudioDeviceRetrySeconds = 1.0;
 static const UInt32 kSharedAudioDropLogInterval = 50;
 
@@ -183,22 +179,6 @@ writeInt16(std::vector<UInt8>& output, SInt16 sample)
     output.push_back(static_cast<UInt8>((sample >> 8) & 0xff));
 }
 
-static bool
-isSilentPcm(const std::vector<UInt8>& output)
-{
-    if (output.empty()) {
-        return false;
-    }
-
-    for (size_t index = 0; index < output.size(); ++index) {
-        if (output[index] != 0) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
 static SInt16
 readChannelSample(const UInt8* frame, const WAVEFORMATEX* format, UInt16 channel)
 {
@@ -260,6 +240,14 @@ writeSharedFrame(std::vector<UInt8>& output, const UInt8* frame,
 }
 
 static void
+writeSilentSharedFrame(std::vector<UInt8>& output, UInt16 outputChannels)
+{
+    for (UInt16 channel = 0; channel < outputChannels; ++channel) {
+        writeInt16(output, 0);
+    }
+}
+
+static void
 convertToSharedPcm16(const UInt8* input, UINT32 frames, const WAVEFORMATEX* format,
                      const AudioFormat& outputFormat, double& nextOutputFrame,
                      std::vector<UInt8>& output, bool silent)
@@ -268,10 +256,6 @@ convertToSharedPcm16(const UInt8* input, UINT32 frames, const WAVEFORMATEX* form
     if (format->nSamplesPerSec == 0 || format->nBlockAlign == 0 ||
         outputFormat.m_sampleRate == 0 || outputFormat.m_channels == 0 ||
         outputFormat.m_bitsPerSample != 16) {
-        return;
-    }
-    if (silent) {
-        nextOutputFrame = 0.0;
         return;
     }
 
@@ -285,9 +269,12 @@ convertToSharedPcm16(const UInt8* input, UINT32 frames, const WAVEFORMATEX* form
                    outputFormat.m_channels * sizeof(SInt16));
 
     for (UINT32 frameIndex = 0; frameIndex < frames; ++frameIndex) {
-        const UInt8* frame = input + frameIndex * format->nBlockAlign;
+        const UInt8* frame = silent ? NULL : input + frameIndex * format->nBlockAlign;
         while (nextOutputFrame <= frameIndex) {
-            if (!silent) {
+            if (silent) {
+                writeSilentSharedFrame(output, outputFormat.m_channels);
+            }
+            else {
                 writeSharedFrame(output, frame, format, outputFormat.m_channels);
             }
             nextOutputFrame += inputFramesPerOutputFrame;
@@ -509,12 +496,21 @@ private:
 
         std::vector<UInt8> output;
         std::vector<UInt8> pendingOutput;
+        std::vector<UInt8> silencePacket(packetBytes, 0);
         double nextOutputFrame = 0.0;
         UINT32 packetFrames = 0;
         UInt32 droppedPackets = 0;
         double nextSendTime = ARCH->time();
-        double lastAudioPacketTime = nextSendTime;
-        double nextHeartbeatTime = nextSendTime + kSharedAudioSilenceHeartbeatSeconds;
+        const double packetSeconds =
+            1.0 / static_cast<double>(kSharedAudioPacketsPerSecond);
+
+        auto sendRealtimeChunk = [&](const UInt8* data, size_t dataSize, double now) {
+            m_callback(AudioChunk::data(data, dataSize), m_context);
+            if (nextSendTime < now) {
+                nextSendTime = now;
+            }
+            nextSendTime += packetSeconds;
+        };
 
         m_callback(AudioChunk::start(outputFormat), m_context);
 
@@ -526,34 +522,24 @@ private:
             }
 
             if (packetFrames == 0) {
-                // Silence and paused sources are normal; keep the stream open
-                // so playback resumes without forcing a protocol-level end.
                 const double now = ARCH->time();
                 if (!pendingOutput.empty()) {
-                    m_callback(AudioChunk::data(&pendingOutput[0],
-                                                pendingOutput.size()),
-                               m_context);
+                    if (pendingOutput.size() < packetBytes) {
+                        pendingOutput.resize(packetBytes, 0);
+                    }
+                    sendRealtimeChunk(&pendingOutput[0], packetBytes, now);
                     pendingOutput.clear();
-                    nextSendTime = now;
-                    nextHeartbeatTime = now + kSharedAudioSilenceHeartbeatSeconds;
                 }
-                else if (now >= nextHeartbeatTime) {
-                    m_callback(AudioChunk::data(NULL, 0), m_context);
-                    nextHeartbeatTime = now + kSharedAudioSilenceHeartbeatSeconds;
+                else if (now >= nextSendTime) {
+                    sendRealtimeChunk(&silencePacket[0], silencePacket.size(), now);
                 }
 
-                const bool idle = now - lastAudioPacketTime >= kSharedAudioIdleResetSeconds;
-                if (idle) {
-                    pendingOutput.clear();
-                    nextOutputFrame = 0.0;
-                    nextSendTime = now;
+                const double sleepSeconds =
+                    std::min(kSharedAudioActivePollSeconds,
+                             std::max(0.0, nextSendTime - ARCH->time()));
+                if (sleepSeconds > 0.0) {
+                    ARCH->sleep(sleepSeconds);
                 }
-                if (now - lastAudioPacketTime >= kSharedAudioDeviceRefreshSeconds) {
-                    LOG((CLOG_NOTE "server audio sharing refreshing idle output device"));
-                    return;
-                }
-                ARCH->sleep(idle ? kSharedAudioIdlePollSeconds :
-                                   kSharedAudioActivePollSeconds);
                 continue;
             }
 
@@ -571,17 +557,8 @@ private:
                 bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
                 convertToSharedPcm16(data, framesAvailable, mixFormat, outputFormat,
                                      nextOutputFrame, output, silent);
-                if (isSilentPcm(output)) {
-                    output.clear();
-                    silent = true;
-                }
                 if (!output.empty()) {
                     const double now = ARCH->time();
-                    if (now - lastAudioPacketTime >= kSharedAudioIdleResetSeconds) {
-                        pendingOutput.clear();
-                        nextSendTime = now;
-                    }
-                    lastAudioPacketTime = now;
                     pendingOutput.insert(pendingOutput.end(), output.begin(), output.end());
                     while (pendingOutput.size() >= packetBytes && !m_stop) {
                         const double now = ARCH->time();
@@ -595,37 +572,9 @@ private:
                             continue;
                         }
 
-                        m_callback(AudioChunk::data(&pendingOutput[0],
-                                                    packetBytes),
-                                   m_context);
-                        nextHeartbeatTime = now + kSharedAudioSilenceHeartbeatSeconds;
+                        sendRealtimeChunk(&pendingOutput[0], packetBytes, now);
                         pendingOutput.erase(pendingOutput.begin(),
                                             pendingOutput.begin() + packetBytes);
-                        if (nextSendTime < now) {
-                            nextSendTime = now;
-                        }
-                        nextSendTime += 1.0 / kSharedAudioPacketsPerSecond;
-                    }
-                }
-                else if (silent) {
-                    const double now = ARCH->time();
-                    if (!pendingOutput.empty()) {
-                        m_callback(AudioChunk::data(&pendingOutput[0],
-                                                    pendingOutput.size()),
-                                   m_context);
-                        pendingOutput.clear();
-                        nextSendTime = now;
-                        nextHeartbeatTime = now + kSharedAudioSilenceHeartbeatSeconds;
-                    }
-                    else if (now >= nextHeartbeatTime) {
-                        m_callback(AudioChunk::data(NULL, 0), m_context);
-                        nextHeartbeatTime = now + kSharedAudioSilenceHeartbeatSeconds;
-                    }
-
-                    if (now - lastAudioPacketTime >= kSharedAudioIdleResetSeconds) {
-                        pendingOutput.clear();
-                        nextOutputFrame = 0.0;
-                        nextSendTime = now;
                     }
                 }
 
@@ -655,6 +604,8 @@ public:
     typedef MMRESULT (WINAPI *WaveOutPrepareHeaderProc)(HWAVEOUT, LPWAVEHDR, UINT);
     typedef MMRESULT (WINAPI *WaveOutUnprepareHeaderProc)(HWAVEOUT, LPWAVEHDR, UINT);
     typedef MMRESULT (WINAPI *WaveOutWriteProc)(HWAVEOUT, LPWAVEHDR, UINT);
+    typedef MMRESULT (WINAPI *WaveOutPauseProc)(HWAVEOUT);
+    typedef MMRESULT (WINAPI *WaveOutRestartProc)(HWAVEOUT);
     typedef MMRESULT (WINAPI *WaveOutResetProc)(HWAVEOUT);
     typedef MMRESULT (WINAPI *WaveOutCloseProc)(HWAVEOUT);
 
@@ -664,7 +615,8 @@ public:
     };
 
     enum {
-        kMaxPlaybackQueueBuffers = 6
+        kPlaybackPrebufferBuffers = 3,
+        kMaxPlaybackQueueBuffers = 12
     };
 
     Impl() :
@@ -674,9 +626,12 @@ public:
         m_waveOutPrepareHeader(NULL),
         m_waveOutUnprepareHeader(NULL),
         m_waveOutWrite(NULL),
+        m_waveOutPause(NULL),
+        m_waveOutRestart(NULL),
         m_waveOutReset(NULL),
         m_waveOutClose(NULL),
-        m_running(false)
+        m_running(false),
+        m_started(false)
     {
     }
 
@@ -713,6 +668,12 @@ public:
         }
 
         m_running = true;
+        m_started = false;
+        result = m_waveOutPause(m_waveOut);
+        if (result != MMSYSERR_NOERROR) {
+            LOG((CLOG_NOTE "client audio playback prebuffer unavailable: waveOutPause failed %u", result));
+            m_started = true;
+        }
         LOG((CLOG_INFO "client audio playback started: %u Hz, %u channels, %u-bit",
              format.m_sampleRate, format.m_channels, format.m_bitsPerSample));
         return true;
@@ -725,9 +686,15 @@ public:
         }
 
         cleanupFinished();
+        if (m_started && m_pending.empty()) {
+            MMRESULT result = m_waveOutPause(m_waveOut);
+            if (result == MMSYSERR_NOERROR) {
+                m_started = false;
+            }
+        }
         if (m_pending.size() >= kMaxPlaybackQueueBuffers) {
-            LOG((CLOG_NOTE "client audio playback queue is stale; reopening device"));
-            return false;
+            LOG((CLOG_DEBUG2 "client audio playback queue is full; dropping realtime chunk"));
+            return true;
         }
 
         char* buffer = new char[dataSize];
@@ -761,6 +728,15 @@ public:
         pending.m_header = header;
         pending.m_data = buffer;
         m_pending.push_back(pending);
+        if (!m_started && m_pending.size() >= kPlaybackPrebufferBuffers) {
+            result = m_waveOutRestart(m_waveOut);
+            if (result != MMSYSERR_NOERROR) {
+                LOG((CLOG_ERR "client audio playback failed: waveOutRestart failed %u", result));
+                stop();
+                return false;
+            }
+            m_started = true;
+        }
         return true;
     }
 
@@ -773,6 +749,7 @@ public:
             m_waveOut = NULL;
         }
         m_running = false;
+        m_started = false;
     }
 
     bool isRunning() const
@@ -797,11 +774,14 @@ private:
         m_waveOutPrepareHeader = reinterpret_cast<WaveOutPrepareHeaderProc>(GetProcAddress(m_winmm, "waveOutPrepareHeader"));
         m_waveOutUnprepareHeader = reinterpret_cast<WaveOutUnprepareHeaderProc>(GetProcAddress(m_winmm, "waveOutUnprepareHeader"));
         m_waveOutWrite = reinterpret_cast<WaveOutWriteProc>(GetProcAddress(m_winmm, "waveOutWrite"));
+        m_waveOutPause = reinterpret_cast<WaveOutPauseProc>(GetProcAddress(m_winmm, "waveOutPause"));
+        m_waveOutRestart = reinterpret_cast<WaveOutRestartProc>(GetProcAddress(m_winmm, "waveOutRestart"));
         m_waveOutReset = reinterpret_cast<WaveOutResetProc>(GetProcAddress(m_winmm, "waveOutReset"));
         m_waveOutClose = reinterpret_cast<WaveOutCloseProc>(GetProcAddress(m_winmm, "waveOutClose"));
 
         if (m_waveOutOpen == NULL || m_waveOutPrepareHeader == NULL ||
             m_waveOutUnprepareHeader == NULL || m_waveOutWrite == NULL ||
+            m_waveOutPause == NULL || m_waveOutRestart == NULL ||
             m_waveOutReset == NULL || m_waveOutClose == NULL) {
             LOG((CLOG_ERR "client audio playback unavailable: failed to load winmm entry points"));
             FreeLibrary(m_winmm);
@@ -849,9 +829,12 @@ private:
     WaveOutPrepareHeaderProc m_waveOutPrepareHeader;
     WaveOutUnprepareHeaderProc m_waveOutUnprepareHeader;
     WaveOutWriteProc m_waveOutWrite;
+    WaveOutPauseProc m_waveOutPause;
+    WaveOutRestartProc m_waveOutRestart;
     WaveOutResetProc m_waveOutReset;
     WaveOutCloseProc m_waveOutClose;
     bool m_running;
+    bool m_started;
     std::vector<PendingBuffer> m_pending;
 };
 
