@@ -2676,30 +2676,9 @@ Server::queueAudioChunk(AudioChunk* chunk)
 		return;
 	}
 
-	bool addEvent = false;
-	{
-		std::lock_guard<std::mutex> lock(m_audioChunkMutex);
-		if (chunk->m_dataSize == 0 &&
-			(m_audioChunkEventPending || m_pendingAudioChunk != NULL)) {
-			delete chunk;
-			return;
-		}
-
-		// Audio is realtime: keep only the newest PCM frame from the COM
-		// capture thread so the main protocol stream cannot build a backlog.
-		delete m_pendingAudioChunk;
-		m_pendingAudioChunk = chunk;
-		if (!m_audioChunkEventPending) {
-			m_audioChunkEventPending = true;
-			addEvent = true;
-		}
-	}
-
-	if (addEvent) {
-		Event event(m_events->forAudio().audioChunkSending(), this);
-		event.setDataObject(new ServerAudioChunkEvent(m_audioSession));
-		m_events->addEvent(event);
-	}
+	Event event(m_events->forAudio().audioChunkSending(), this);
+	event.setDataObject(new ServerAudioChunkEvent(m_audioSession, chunk));
+	m_events->addEvent(event);
 }
 
 void
