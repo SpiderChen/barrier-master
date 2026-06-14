@@ -33,7 +33,6 @@ static const size_t kSharedAudioPacketsPerSecond = 50;
 static const size_t kSharedAudioMaxPendingPackets = 5;
 static const double kSharedAudioMaxSendLeadSeconds = 0.12;
 static const double kSharedAudioActivePollSeconds = 0.010;
-static const double kSharedAudioPartialFlushSeconds = 0.040;
 static const double kSharedAudioDeviceRetrySeconds = 1.0;
 static const double kSharedAudioPlaybackQueueStallSeconds = 0.50;
 static const UInt32 kSharedAudioDropLogInterval = 50;
@@ -501,7 +500,6 @@ private:
         std::vector<UInt8> pendingOutput;
         std::vector<UInt8> silencePacket(packetBytes, 0);
         double nextOutputFrame = 0.0;
-        double pendingOutputStartTime = 0.0;
         UINT32 packetFrames = 0;
         UInt32 droppedPackets = 0;
         double nextSendTime = ARCH->time();
@@ -540,37 +538,19 @@ private:
             if (packetFrames == 0) {
                 const double now = ARCH->time();
                 if (!pendingOutput.empty()) {
-                    // WASAPI loopback can expose periods shorter than our network packet.
-                    // Wait briefly for the next period before padding the tail with silence.
-                    if (pendingOutputStartTime == 0.0) {
-                        pendingOutputStartTime = now;
+                    if (pendingOutput.size() < packetBytes) {
+                        pendingOutput.resize(packetBytes, 0);
                     }
-                    if (now - pendingOutputStartTime >= kSharedAudioPartialFlushSeconds) {
-                        if (pendingOutput.size() < packetBytes) {
-                            pendingOutput.resize(packetBytes, 0);
-                        }
-                        sendRealtimeChunk(&pendingOutput[0], packetBytes);
-                        pendingOutput.erase(pendingOutput.begin(),
-                                            pendingOutput.begin() + packetBytes);
-                        pendingOutputStartTime =
-                            pendingOutput.empty() ? 0.0 : ARCH->time();
-                    }
+                    sendRealtimeChunk(&pendingOutput[0], packetBytes);
+                    pendingOutput.clear();
                 }
                 else if (now >= nextSendTime) {
                     sendRealtimeChunk(&silencePacket[0], silencePacket.size());
                 }
 
-                double sleepSeconds = 0.0;
-                const double sleepNow = ARCH->time();
-                if (!pendingOutput.empty() && pendingOutputStartTime > 0.0) {
-                    sleepSeconds = (std::min)(kSharedAudioActivePollSeconds,
-                        (std::max)(0.0, pendingOutputStartTime +
-                                   kSharedAudioPartialFlushSeconds - sleepNow));
-                }
-                else {
-                    sleepSeconds = (std::min)(kSharedAudioActivePollSeconds,
-                        (std::max)(0.0, nextSendTime - sleepNow));
-                }
+                const double sleepSeconds =
+                    (std::min)(kSharedAudioActivePollSeconds,
+                               (std::max)(0.0, nextSendTime - ARCH->time()));
                 if (sleepSeconds > 0.0) {
                     ARCH->sleep(sleepSeconds);
                 }
@@ -598,9 +578,6 @@ private:
                 }
 
                 if (!output.empty()) {
-                    if (pendingOutput.empty()) {
-                        pendingOutputStartTime = ARCH->time();
-                    }
                     pendingOutput.insert(pendingOutput.end(), output.begin(), output.end());
                     const size_t maxPendingBytes = packetBytes * kSharedAudioMaxPendingPackets;
                     if (pendingOutput.size() > maxPendingBytes) {
@@ -610,8 +587,6 @@ private:
                         if (dropBytes > 0) {
                             pendingOutput.erase(pendingOutput.begin(),
                                                 pendingOutput.begin() + dropBytes);
-                            pendingOutputStartTime =
-                                pendingOutput.empty() ? 0.0 : ARCH->time();
                             nextSendTime = ARCH->time();
                             ++droppedPackets;
                             if ((droppedPackets % kSharedAudioDropLogInterval) == 1) {
@@ -624,8 +599,6 @@ private:
                         if (nextSendTime > now + kSharedAudioMaxSendLeadSeconds) {
                             pendingOutput.erase(pendingOutput.begin(),
                                                 pendingOutput.begin() + packetBytes);
-                            pendingOutputStartTime =
-                                pendingOutput.empty() ? 0.0 : ARCH->time();
                             ++droppedPackets;
                             if ((droppedPackets % kSharedAudioDropLogInterval) == 1) {
                                 LOG((CLOG_NOTE "server audio sharing dropped stale queued audio"));
@@ -636,8 +609,6 @@ private:
                         sendRealtimeChunk(&pendingOutput[0], packetBytes);
                         pendingOutput.erase(pendingOutput.begin(),
                                             pendingOutput.begin() + packetBytes);
-                        pendingOutputStartTime =
-                            pendingOutput.empty() ? 0.0 : ARCH->time();
                     }
                 }
 
@@ -665,8 +636,6 @@ public:
     typedef MMRESULT (WINAPI *WaveOutPrepareHeaderProc)(HWAVEOUT, LPWAVEHDR, UINT);
     typedef MMRESULT (WINAPI *WaveOutUnprepareHeaderProc)(HWAVEOUT, LPWAVEHDR, UINT);
     typedef MMRESULT (WINAPI *WaveOutWriteProc)(HWAVEOUT, LPWAVEHDR, UINT);
-    typedef MMRESULT (WINAPI *WaveOutPauseProc)(HWAVEOUT);
-    typedef MMRESULT (WINAPI *WaveOutRestartProc)(HWAVEOUT);
     typedef MMRESULT (WINAPI *WaveOutResetProc)(HWAVEOUT);
     typedef MMRESULT (WINAPI *WaveOutCloseProc)(HWAVEOUT);
 
@@ -676,7 +645,6 @@ public:
     };
 
     enum {
-        kPlaybackPrebufferBuffers = 8,
         kMaxPlaybackQueueBuffers = 30
     };
 
@@ -687,12 +655,9 @@ public:
         m_waveOutPrepareHeader(NULL),
         m_waveOutUnprepareHeader(NULL),
         m_waveOutWrite(NULL),
-        m_waveOutPause(NULL),
-        m_waveOutRestart(NULL),
         m_waveOutReset(NULL),
         m_waveOutClose(NULL),
         m_running(false),
-        m_started(false),
         m_lastQueueProgressTime(0.0)
     {
     }
@@ -730,13 +695,7 @@ public:
         }
 
         m_running = true;
-        m_started = false;
         m_lastQueueProgressTime = ARCH->time();
-        result = m_waveOutPause(m_waveOut);
-        if (result != MMSYSERR_NOERROR) {
-            LOG((CLOG_NOTE "client audio playback prebuffer unavailable: waveOutPause failed %u", result));
-            m_started = true;
-        }
         LOG((CLOG_INFO "client audio playback started: %u Hz, %u channels, %u-bit",
              format.m_sampleRate, format.m_channels, format.m_bitsPerSample));
         return true;
@@ -750,12 +709,6 @@ public:
 
         cleanupFinished();
         const double now = ARCH->time();
-        if (m_started && m_pending.empty()) {
-            MMRESULT result = m_waveOutPause(m_waveOut);
-            if (result == MMSYSERR_NOERROR) {
-                m_started = false;
-            }
-        }
         if (m_pending.size() >= kMaxPlaybackQueueBuffers) {
             if (m_lastQueueProgressTime > 0.0 &&
                 now - m_lastQueueProgressTime >= kSharedAudioPlaybackQueueStallSeconds) {
@@ -798,15 +751,6 @@ public:
         pending.m_header = header;
         pending.m_data = buffer;
         m_pending.push_back(pending);
-        if (!m_started && m_pending.size() >= kPlaybackPrebufferBuffers) {
-            result = m_waveOutRestart(m_waveOut);
-            if (result != MMSYSERR_NOERROR) {
-                LOG((CLOG_ERR "client audio playback failed: waveOutRestart failed %u", result));
-                stop();
-                return false;
-            }
-            m_started = true;
-        }
         return true;
     }
 
@@ -819,7 +763,6 @@ public:
             m_waveOut = NULL;
         }
         m_running = false;
-        m_started = false;
         m_lastQueueProgressTime = 0.0;
     }
 
@@ -845,14 +788,11 @@ private:
         m_waveOutPrepareHeader = reinterpret_cast<WaveOutPrepareHeaderProc>(GetProcAddress(m_winmm, "waveOutPrepareHeader"));
         m_waveOutUnprepareHeader = reinterpret_cast<WaveOutUnprepareHeaderProc>(GetProcAddress(m_winmm, "waveOutUnprepareHeader"));
         m_waveOutWrite = reinterpret_cast<WaveOutWriteProc>(GetProcAddress(m_winmm, "waveOutWrite"));
-        m_waveOutPause = reinterpret_cast<WaveOutPauseProc>(GetProcAddress(m_winmm, "waveOutPause"));
-        m_waveOutRestart = reinterpret_cast<WaveOutRestartProc>(GetProcAddress(m_winmm, "waveOutRestart"));
         m_waveOutReset = reinterpret_cast<WaveOutResetProc>(GetProcAddress(m_winmm, "waveOutReset"));
         m_waveOutClose = reinterpret_cast<WaveOutCloseProc>(GetProcAddress(m_winmm, "waveOutClose"));
 
         if (m_waveOutOpen == NULL || m_waveOutPrepareHeader == NULL ||
             m_waveOutUnprepareHeader == NULL || m_waveOutWrite == NULL ||
-            m_waveOutPause == NULL || m_waveOutRestart == NULL ||
             m_waveOutReset == NULL || m_waveOutClose == NULL) {
             LOG((CLOG_ERR "client audio playback unavailable: failed to load winmm entry points"));
             FreeLibrary(m_winmm);
@@ -906,12 +846,9 @@ private:
     WaveOutPrepareHeaderProc m_waveOutPrepareHeader;
     WaveOutUnprepareHeaderProc m_waveOutUnprepareHeader;
     WaveOutWriteProc m_waveOutWrite;
-    WaveOutPauseProc m_waveOutPause;
-    WaveOutRestartProc m_waveOutRestart;
     WaveOutResetProc m_waveOutReset;
     WaveOutCloseProc m_waveOutClose;
     bool m_running;
-    bool m_started;
     double m_lastQueueProgressTime;
     std::vector<PendingBuffer> m_pending;
 };

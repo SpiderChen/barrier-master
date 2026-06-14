@@ -828,6 +828,9 @@ Client::audioChunkReceived(UInt8 mark, const std::string& data)
         }
         m_audioFormat = format;
         m_hasAudioFormat = true;
+        if (!m_audioPlayer->isRunning()) {
+            m_audioPlayer->start(m_audioFormat);
+        }
         m_lastAudioChunkTime = now;
         break;
     }
