@@ -29,12 +29,14 @@ struct AudioQualityProfile {
 };
 
 static const UInt16 kSharedAudioBitsPerSample = 16;
-static const size_t kSharedAudioPacketsPerSecond = 50;
-static const size_t kSharedAudioMaxPendingPackets = 5;
-static const double kSharedAudioMaxSendLeadSeconds = 0.12;
-static const double kSharedAudioActivePollSeconds = 0.010;
+static const size_t kSharedAudioPacketsPerSecond = 100;
+static const size_t kSharedAudioMaxPendingPackets = 20;
+static const double kSharedAudioActivePollSeconds = 0.005;
+static const double kSharedAudioIdleResetSeconds = 1.25;
+static const double kSharedAudioDeviceRefreshSeconds = 5.0;
 static const double kSharedAudioDeviceRetrySeconds = 1.0;
 static const double kSharedAudioPlaybackQueueStallSeconds = 0.50;
+static const UInt32 kSharedAudioEventWaitMilliseconds = 50;
 static const UInt32 kSharedAudioDropLogInterval = 50;
 
 static const AudioQualityProfile kAudioQualityProfiles[] = {
@@ -292,6 +294,8 @@ public:
     typedef void (WINAPI *CoUninitializeProc)();
     typedef HRESULT (WINAPI *CoCreateInstanceProc)(REFCLSID, LPUNKNOWN, DWORD, REFIID, LPVOID*);
     typedef void (WINAPI *CoTaskMemFreeProc)(LPVOID);
+    typedef HANDLE (WINAPI *AvSetMmThreadCharacteristicsAProc)(LPCSTR, LPDWORD);
+    typedef BOOL (WINAPI *AvRevertMmThreadCharacteristicsProc)(HANDLE);
 
     Impl() :
         m_thread(NULL),
@@ -389,12 +393,33 @@ private:
             return;
         }
 
+        HMODULE avrt = LoadLibraryA("avrt.dll");
+        AvRevertMmThreadCharacteristicsProc avRevertMmThreadCharacteristics = NULL;
+        HANDLE mmcssHandle = NULL;
+        if (avrt != NULL) {
+            AvSetMmThreadCharacteristicsAProc avSetMmThreadCharacteristics =
+                reinterpret_cast<AvSetMmThreadCharacteristicsAProc>(
+                    GetProcAddress(avrt, "AvSetMmThreadCharacteristicsA"));
+            avRevertMmThreadCharacteristics =
+                reinterpret_cast<AvRevertMmThreadCharacteristicsProc>(
+                    GetProcAddress(avrt, "AvRevertMmThreadCharacteristics"));
+            if (avSetMmThreadCharacteristics != NULL &&
+                avRevertMmThreadCharacteristics != NULL) {
+                DWORD taskIndex = 0;
+                mmcssHandle = avSetMmThreadCharacteristics("Pro Audio", &taskIndex);
+                if (mmcssHandle == NULL) {
+                    mmcssHandle = avSetMmThreadCharacteristics("Audio", &taskIndex);
+                }
+            }
+        }
+
         while (!m_stop) {
             IMMDeviceEnumerator* enumerator = NULL;
             IMMDevice* device = NULL;
             IAudioClient* audioClient = NULL;
             IAudioCaptureClient* captureClient = NULL;
             WAVEFORMATEX* mixFormat = NULL;
+            HANDLE captureEvent = NULL;
             bool audioClientStarted = false;
 
             do {
@@ -425,13 +450,35 @@ private:
                     break;
                 }
 
+                captureEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+
                 const REFERENCE_TIME bufferDuration = 10000000;
+                DWORD streamFlags = AUDCLNT_STREAMFLAGS_LOOPBACK;
+                if (captureEvent != NULL) {
+                    streamFlags |= AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
+                }
                 hr = audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED,
-                                             AUDCLNT_STREAMFLAGS_LOOPBACK,
+                                             streamFlags,
                                              bufferDuration, 0, mixFormat, NULL);
+                if (FAILED(hr) && captureEvent != NULL) {
+                    LOG((CLOG_NOTE "server audio sharing event-driven capture unavailable; falling back to polling"));
+                    CloseHandle(captureEvent);
+                    captureEvent = NULL;
+                    hr = audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED,
+                                                 AUDCLNT_STREAMFLAGS_LOOPBACK,
+                                                 bufferDuration, 0, mixFormat, NULL);
+                }
                 if (FAILED(hr)) {
                     LOG((CLOG_ERR "server audio sharing unavailable: loopback Initialize failed 0x%08x", hr));
                     break;
+                }
+
+                if (captureEvent != NULL) {
+                    hr = audioClient->SetEventHandle(captureEvent);
+                    if (FAILED(hr)) {
+                        LOG((CLOG_ERR "server audio sharing unavailable: SetEventHandle failed 0x%08x", hr));
+                        break;
+                    }
                 }
 
                 hr = audioClient->GetService(__uuidof(IAudioCaptureClient),
@@ -449,7 +496,7 @@ private:
                 audioClientStarted = true;
 
                 AudioFormat outputFormat = m_outputFormat;
-                captureLoop(captureClient, mixFormat, outputFormat);
+                captureLoop(captureClient, mixFormat, outputFormat, captureEvent);
             } while (false);
 
             if (audioClientStarted) {
@@ -457,6 +504,9 @@ private:
             }
             if (mixFormat != NULL) {
                 coTaskMemFree(mixFormat);
+            }
+            if (captureEvent != NULL) {
+                CloseHandle(captureEvent);
             }
             if (captureClient != NULL) {
                 captureClient->Release();
@@ -476,6 +526,12 @@ private:
             }
         }
 
+        if (mmcssHandle != NULL && avRevertMmThreadCharacteristics != NULL) {
+            avRevertMmThreadCharacteristics(mmcssHandle);
+        }
+        if (avrt != NULL) {
+            FreeLibrary(avrt);
+        }
         coUninitialize();
         FreeLibrary(ole32);
         m_running = false;
@@ -489,7 +545,7 @@ private:
     }
 
     void captureLoop(IAudioCaptureClient* captureClient, const WAVEFORMATEX* mixFormat,
-                     const AudioFormat& outputFormat)
+                     const AudioFormat& outputFormat, HANDLE captureEvent)
     {
         const size_t packetBytes = audioPacketBytes(outputFormat);
         if (packetBytes == 0) {
@@ -498,32 +554,13 @@ private:
 
         std::vector<UInt8> output;
         std::vector<UInt8> pendingOutput;
-        std::vector<UInt8> silencePacket(packetBytes, 0);
         double nextOutputFrame = 0.0;
         UINT32 packetFrames = 0;
         UInt32 droppedPackets = 0;
-        double nextSendTime = ARCH->time();
-        const double packetSeconds =
-            1.0 / static_cast<double>(kSharedAudioPacketsPerSecond);
+        double lastEndpointPacketTime = ARCH->time();
 
-        auto sendRealtimeChunk = [&](const UInt8* data, size_t dataSize) {
-            double now = ARCH->time();
-            while (nextSendTime > now && !m_stop) {
-                const double sleepSeconds =
-                    (std::min)(kSharedAudioActivePollSeconds, nextSendTime - now);
-                if (sleepSeconds > 0.0) {
-                    ARCH->sleep(sleepSeconds);
-                }
-                now = ARCH->time();
-            }
-            if (m_stop) {
-                return;
-            }
+        auto sendChunk = [&](const UInt8* data, size_t dataSize) {
             m_callback(AudioChunk::data(data, dataSize), m_context);
-            if (nextSendTime < now) {
-                nextSendTime = now;
-            }
-            nextSendTime += packetSeconds;
         };
 
         m_callback(AudioChunk::start(outputFormat), m_context);
@@ -537,22 +574,29 @@ private:
 
             if (packetFrames == 0) {
                 const double now = ARCH->time();
-                if (!pendingOutput.empty()) {
-                    if (pendingOutput.size() < packetBytes) {
-                        pendingOutput.resize(packetBytes, 0);
-                    }
-                    sendRealtimeChunk(&pendingOutput[0], packetBytes);
+                const bool endpointIdle =
+                    now - lastEndpointPacketTime >= kSharedAudioIdleResetSeconds;
+                if (endpointIdle) {
+                    nextOutputFrame = 0.0;
                     pendingOutput.clear();
                 }
-                else if (now >= nextSendTime) {
-                    sendRealtimeChunk(&silencePacket[0], silencePacket.size());
+                if (now - lastEndpointPacketTime >= kSharedAudioDeviceRefreshSeconds) {
+                    LOG((CLOG_NOTE "server audio sharing refreshing idle output device"));
+                    return;
                 }
 
-                const double sleepSeconds =
-                    (std::min)(kSharedAudioActivePollSeconds,
-                               (std::max)(0.0, nextSendTime - ARCH->time()));
-                if (sleepSeconds > 0.0) {
-                    ARCH->sleep(sleepSeconds);
+                if (captureEvent != NULL) {
+                    const DWORD waitResult =
+                        WaitForSingleObject(captureEvent,
+                                             static_cast<DWORD>(kSharedAudioEventWaitMilliseconds));
+                    if (waitResult == WAIT_FAILED) {
+                        LOG((CLOG_ERR "server audio sharing restarting capture: event wait failed %lu",
+                             GetLastError()));
+                        return;
+                    }
+                }
+                else {
+                    ARCH->sleep(kSharedAudioActivePollSeconds);
                 }
                 continue;
             }
@@ -568,6 +612,7 @@ private:
                     return;
                 }
 
+                lastEndpointPacketTime = ARCH->time();
                 bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
                 convertToSharedPcm16(data, framesAvailable, mixFormat, outputFormat,
                                      nextOutputFrame, output, silent);
@@ -587,7 +632,6 @@ private:
                         if (dropBytes > 0) {
                             pendingOutput.erase(pendingOutput.begin(),
                                                 pendingOutput.begin() + dropBytes);
-                            nextSendTime = ARCH->time();
                             ++droppedPackets;
                             if ((droppedPackets % kSharedAudioDropLogInterval) == 1) {
                                 LOG((CLOG_NOTE "server audio sharing dropped buffered audio to stay realtime"));
@@ -595,18 +639,7 @@ private:
                         }
                     }
                     while (pendingOutput.size() >= packetBytes && !m_stop) {
-                        const double now = ARCH->time();
-                        if (nextSendTime > now + kSharedAudioMaxSendLeadSeconds) {
-                            pendingOutput.erase(pendingOutput.begin(),
-                                                pendingOutput.begin() + packetBytes);
-                            ++droppedPackets;
-                            if ((droppedPackets % kSharedAudioDropLogInterval) == 1) {
-                                LOG((CLOG_NOTE "server audio sharing dropped stale queued audio"));
-                            }
-                            continue;
-                        }
-
-                        sendRealtimeChunk(&pendingOutput[0], packetBytes);
+                        sendChunk(&pendingOutput[0], packetBytes);
                         pendingOutput.erase(pendingOutput.begin(),
                                             pendingOutput.begin() + packetBytes);
                     }
@@ -881,11 +914,16 @@ class AudioPlayer::Impl {
 public:
     Impl() :
         m_queue(NULL),
-        m_queueStarted(false),
-        m_queueNeedsPause(false),
         m_running(false),
-        m_queuedBuffers(0),
-        m_lastQueueProgressTime(0.0)
+        m_playbackStarted(false),
+        m_queueError(false),
+        m_buffering(true),
+        m_bufferBytes(0),
+        m_targetBufferBytes(0),
+        m_highBufferBytes(0),
+        m_readOffset(0),
+        m_writeOffset(0),
+        m_bufferedBytes(0)
     {
     }
 
@@ -921,6 +959,13 @@ public:
             (streamFormat.mChannelsPerFrame * streamFormat.mBitsPerChannel) / 8;
         streamFormat.mBytesPerPacket = streamFormat.mBytesPerFrame;
 
+        const size_t bufferBytes = audioPacketBytes(format);
+        if (bufferBytes == 0 ||
+            bufferBytes > static_cast<size_t>(std::numeric_limits<UInt32>::max())) {
+            LOG((CLOG_ERR "client audio playback unavailable: invalid buffer size"));
+            return false;
+        }
+
         AudioQueueRef queue = NULL;
         OSStatus status = AudioQueueNewOutput(
             &streamFormat,
@@ -936,17 +981,40 @@ public:
             return false;
         }
 
+        std::vector<AudioQueueBufferRef> queueBuffers;
+        for (size_t index = 0; index < kPlaybackQueueBuffers; ++index) {
+            AudioQueueBufferRef buffer = NULL;
+            status = AudioQueueAllocateBuffer(queue,
+                                              static_cast<UInt32>(bufferBytes),
+                                              &buffer);
+            if (status != noErr || buffer == NULL) {
+                LOG((CLOG_ERR "client audio playback failed: AudioQueueAllocateBuffer failed %i",
+                     static_cast<int>(status)));
+                AudioQueueDispose(queue, true);
+                return false;
+            }
+
+            queueBuffers.push_back(buffer);
+        }
+
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             m_queue = queue;
-            m_queueStarted = false;
-            m_queueNeedsPause = false;
             m_running = true;
-            m_queuedBuffers = 0;
-            m_lastQueueProgressTime = ARCH->time();
+            m_playbackStarted = false;
+            m_queueError = false;
+            m_buffering = true;
+            m_bufferBytes = bufferBytes;
+            m_targetBufferBytes = m_bufferBytes * kTargetBufferedPackets;
+            m_highBufferBytes = m_bufferBytes * kHighBufferedPackets;
+            m_audioBuffer.assign(m_bufferBytes * kMaxBufferedPackets, 0);
+            m_queueBuffers = queueBuffers;
+            m_readOffset = 0;
+            m_writeOffset = 0;
+            m_bufferedBytes = 0;
         }
 
-        LOG((CLOG_INFO "client audio playback started: %u Hz, %u channels, %u-bit",
+        LOG((CLOG_INFO "client audio playback prepared: %u Hz, %u channels, %u-bit",
              format.m_sampleRate, format.m_channels, format.m_bitsPerSample));
         return true;
     }
@@ -962,89 +1030,33 @@ public:
             return true;
         }
 
-        AudioQueueRef failedQueue = NULL;
-
+        AudioQueueRef queueToStart = NULL;
         {
             std::lock_guard<std::mutex> lock(m_mutex);
-            if (!m_running || m_queue == NULL) {
+            if (!m_running || m_queue == NULL || m_queueError || m_bufferBytes == 0) {
                 return false;
             }
 
-            const double now = ARCH->time();
-            if (m_queuedBuffers >= kMaxQueuedBuffers) {
-                if (m_lastQueueProgressTime > 0.0 &&
-                    now - m_lastQueueProgressTime >= kSharedAudioPlaybackQueueStallSeconds) {
-                    LOG((CLOG_NOTE "client audio playback queue stalled; reopening device"));
-                    failedQueue = m_queue;
-                    m_queue = NULL;
-                    m_queueStarted = false;
-                    m_queueNeedsPause = false;
-                    m_running = false;
-                    m_queuedBuffers = 0;
-                    m_lastQueueProgressTime = 0.0;
-                }
-                else {
-                    LOG((CLOG_DEBUG2 "client audio playback queue is full; dropping realtime chunk"));
-                    return true;
-                }
-            }
-
-            if (failedQueue == NULL) {
-                if (m_queueNeedsPause) {
-                    OSStatus pauseStatus = AudioQueuePause(m_queue);
-                    if (pauseStatus != noErr) {
-                        LOG((CLOG_NOTE "client audio playback prebuffer reset failed: AudioQueuePause failed %i",
-                             static_cast<int>(pauseStatus)));
-                    }
-                    m_queueNeedsPause = false;
-                }
-
-                AudioQueueBufferRef buffer = NULL;
-                OSStatus status = AudioQueueAllocateBuffer(
-                    m_queue, static_cast<UInt32>(dataSize), &buffer);
-                if (status != noErr || buffer == NULL) {
-                    LOG((CLOG_ERR "client audio playback failed: AudioQueueAllocateBuffer failed %i",
-                         static_cast<int>(status)));
+            appendAudio(data, dataSize);
+            if (!m_playbackStarted && m_bufferedBytes >= m_targetBufferBytes) {
+                if (!enqueueInitialBuffers()) {
                     return false;
                 }
-
-                std::memcpy(buffer->mAudioData, data, dataSize);
-                buffer->mAudioDataByteSize = static_cast<UInt32>(dataSize);
-
-                ++m_queuedBuffers;
-                status = AudioQueueEnqueueBuffer(m_queue, buffer, 0, NULL);
-                if (status != noErr) {
-                    --m_queuedBuffers;
-                    AudioQueueFreeBuffer(m_queue, buffer);
-                    LOG((CLOG_ERR "client audio playback failed: AudioQueueEnqueueBuffer failed %i",
-                         static_cast<int>(status)));
-                    return false;
-                }
-
-                if (!m_queueStarted && m_queuedBuffers >= kPlaybackPrebufferBuffers) {
-                    status = AudioQueueStart(m_queue, NULL);
-                    if (status != noErr) {
-                        LOG((CLOG_ERR "client audio playback failed: AudioQueueStart failed %i",
-                             static_cast<int>(status)));
-                        failedQueue = m_queue;
-                        m_queue = NULL;
-                        m_queueStarted = false;
-                        m_queueNeedsPause = false;
-                        m_running = false;
-                        m_queuedBuffers = 0;
-                        m_lastQueueProgressTime = 0.0;
-                    }
-                    else {
-                        m_queueStarted = true;
-                        m_queueNeedsPause = false;
-                    }
-                }
+                m_playbackStarted = true;
+                m_buffering = false;
+                queueToStart = m_queue;
             }
         }
 
-        if (failedQueue != NULL) {
-            AudioQueueDispose(failedQueue, true);
-            return false;
+        if (queueToStart != NULL) {
+            OSStatus status = AudioQueueStart(queueToStart, NULL);
+            if (status != noErr) {
+                LOG((CLOG_ERR "client audio playback failed: AudioQueueStart failed %i",
+                     static_cast<int>(status)));
+                markQueueFailed(queueToStart);
+                return false;
+            }
+            LOG((CLOG_INFO "client audio playback started after jitter buffer warmup"));
         }
         return true;
     }
@@ -1056,11 +1068,15 @@ public:
             std::lock_guard<std::mutex> lock(m_mutex);
             queue = m_queue;
             m_queue = NULL;
-            m_queueStarted = false;
-            m_queueNeedsPause = false;
             m_running = false;
-            m_queuedBuffers = 0;
-            m_lastQueueProgressTime = 0.0;
+            m_playbackStarted = false;
+            m_queueError = false;
+            m_buffering = true;
+            m_bufferBytes = 0;
+            m_targetBufferBytes = 0;
+            m_highBufferBytes = 0;
+            m_queueBuffers.clear();
+            resetAudioBuffer();
         }
 
         if (queue != NULL) {
@@ -1085,34 +1101,172 @@ private:
     void onBufferComplete(AudioQueueRef queue, AudioQueueBufferRef buffer)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
-        if (m_queue != queue) {
+        if (m_queue != queue || !m_running || !m_playbackStarted) {
             return;
         }
 
-        AudioQueueFreeBuffer(queue, buffer);
-        if (m_queuedBuffers > 0) {
-            --m_queuedBuffers;
+        fillAudioBuffer(buffer);
+        OSStatus status = AudioQueueEnqueueBuffer(queue, buffer, 0, NULL);
+        if (status != noErr) {
+            LOG((CLOG_ERR "client audio playback failed: AudioQueueEnqueueBuffer failed %i",
+                 static_cast<int>(status)));
+            m_queueError = true;
+            m_running = false;
         }
-        m_lastQueueProgressTime = ARCH->time();
+    }
 
-        if (m_queueStarted && m_queuedBuffers == 0) {
-            m_queueStarted = false;
-            m_queueNeedsPause = true;
+    bool enqueueInitialBuffers()
+    {
+        for (std::vector<AudioQueueBufferRef>::iterator index = m_queueBuffers.begin();
+             index != m_queueBuffers.end(); ++index) {
+            fillAudioBuffer(*index);
+            OSStatus status = AudioQueueEnqueueBuffer(m_queue, *index, 0, NULL);
+            if (status != noErr) {
+                LOG((CLOG_ERR "client audio playback failed: AudioQueueEnqueueBuffer failed %i",
+                     static_cast<int>(status)));
+                m_queueError = true;
+                m_running = false;
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void markQueueFailed(AudioQueueRef queue)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_queue == queue) {
+            m_queueError = true;
+            m_running = false;
+            m_playbackStarted = false;
+        }
+    }
+
+    void appendAudio(const char* data, size_t dataSize)
+    {
+        const size_t maxBufferedBytes = m_audioBuffer.size();
+        const UInt8* input = reinterpret_cast<const UInt8*>(data);
+        size_t inputSize = dataSize;
+
+        if (maxBufferedBytes > 0 && inputSize > maxBufferedBytes) {
+            input += inputSize - maxBufferedBytes;
+            inputSize = maxBufferedBytes;
+            m_readOffset = 0;
+            m_writeOffset = 0;
+            m_bufferedBytes = 0;
+        }
+
+        if (maxBufferedBytes == 0 || inputSize == 0) {
+            return;
+        }
+
+        if (m_bufferedBytes + inputSize > maxBufferedBytes) {
+            dropAudioBytes(m_bufferedBytes + inputSize - maxBufferedBytes);
+        }
+
+        writeAudioBytes(input, inputSize);
+        if (m_playbackStarted && m_highBufferBytes > 0 &&
+            m_bufferedBytes > m_highBufferBytes) {
+            dropAudioBytes(m_bufferedBytes - m_targetBufferBytes);
+        }
+    }
+
+    void fillAudioBuffer(AudioQueueBufferRef buffer)
+    {
+        const size_t bytesToFill =
+            (std::min)(m_bufferBytes,
+                       static_cast<size_t>(buffer->mAudioDataBytesCapacity));
+        if (m_buffering) {
+            if (m_bufferedBytes < m_targetBufferBytes) {
+                std::memset(buffer->mAudioData, 0, bytesToFill);
+                buffer->mAudioDataByteSize = static_cast<UInt32>(bytesToFill);
+                return;
+            }
+            m_buffering = false;
+        }
+
+        const size_t bytesFromAudio =
+            (std::min)(bytesToFill, m_bufferedBytes);
+
+        if (bytesFromAudio > 0) {
+            readAudioBytes(static_cast<UInt8*>(buffer->mAudioData),
+                           bytesFromAudio);
+        }
+        if (bytesFromAudio < bytesToFill) {
+            std::memset(static_cast<UInt8*>(buffer->mAudioData) + bytesFromAudio,
+                        0, bytesToFill - bytesFromAudio);
+        }
+        buffer->mAudioDataByteSize = static_cast<UInt32>(bytesToFill);
+    }
+
+    void resetAudioBuffer()
+    {
+        m_audioBuffer.clear();
+        m_readOffset = 0;
+        m_writeOffset = 0;
+        m_bufferedBytes = 0;
+    }
+
+    void dropAudioBytes(size_t bytes)
+    {
+        if (bytes >= m_bufferedBytes) {
+            m_readOffset = 0;
+            m_writeOffset = 0;
+            m_bufferedBytes = 0;
+            return;
+        }
+
+        m_readOffset = (m_readOffset + bytes) % m_audioBuffer.size();
+        m_bufferedBytes -= bytes;
+    }
+
+    void writeAudioBytes(const UInt8* input, size_t bytes)
+    {
+        while (bytes > 0) {
+            const size_t chunk =
+                (std::min)(bytes, m_audioBuffer.size() - m_writeOffset);
+            std::memcpy(&m_audioBuffer[m_writeOffset], input, chunk);
+            m_writeOffset = (m_writeOffset + chunk) % m_audioBuffer.size();
+            m_bufferedBytes += chunk;
+            input += chunk;
+            bytes -= chunk;
+        }
+    }
+
+    void readAudioBytes(UInt8* output, size_t bytes)
+    {
+        while (bytes > 0) {
+            const size_t chunk =
+                (std::min)(bytes, m_audioBuffer.size() - m_readOffset);
+            std::memcpy(output, &m_audioBuffer[m_readOffset], chunk);
+            m_readOffset = (m_readOffset + chunk) % m_audioBuffer.size();
+            m_bufferedBytes -= chunk;
+            output += chunk;
+            bytes -= chunk;
         }
     }
 
 private:
     enum {
-        kPlaybackPrebufferBuffers = 8,
-        kMaxQueuedBuffers = 30
+        kPlaybackQueueBuffers = 4,
+        kTargetBufferedPackets = 8,
+        kHighBufferedPackets = 20,
+        kMaxBufferedPackets = 120
     };
 
     AudioQueueRef m_queue;
-    bool m_queueStarted;
-    bool m_queueNeedsPause;
     bool m_running;
-    size_t m_queuedBuffers;
-    double m_lastQueueProgressTime;
+    bool m_playbackStarted;
+    bool m_queueError;
+    bool m_buffering;
+    size_t m_bufferBytes;
+    size_t m_targetBufferBytes;
+    size_t m_highBufferBytes;
+    std::vector<AudioQueueBufferRef> m_queueBuffers;
+    std::vector<UInt8> m_audioBuffer;
+    size_t m_readOffset;
+    size_t m_writeOffset;
+    size_t m_bufferedBytes;
     mutable std::mutex m_mutex;
 };
 
