@@ -30,9 +30,11 @@ struct AudioQualityProfile {
 
 static const UInt16 kSharedAudioBitsPerSample = 16;
 static const size_t kSharedAudioPacketsPerSecond = 10;
+static const size_t kSharedAudioMaxPendingPackets = 3;
 static const double kSharedAudioMaxSendLeadSeconds = 0.20;
 static const double kSharedAudioActivePollSeconds = 0.050;
 static const double kSharedAudioDeviceRetrySeconds = 1.0;
+static const double kSharedAudioPlaybackQueueStallSeconds = 1.0;
 static const UInt32 kSharedAudioDropLogInterval = 50;
 
 static const AudioQualityProfile kAudioQualityProfiles[] = {
@@ -504,7 +506,19 @@ private:
         const double packetSeconds =
             1.0 / static_cast<double>(kSharedAudioPacketsPerSecond);
 
-        auto sendRealtimeChunk = [&](const UInt8* data, size_t dataSize, double now) {
+        auto sendRealtimeChunk = [&](const UInt8* data, size_t dataSize) {
+            double now = ARCH->time();
+            while (nextSendTime > now && !m_stop) {
+                const double sleepSeconds =
+                    (std::min)(kSharedAudioActivePollSeconds, nextSendTime - now);
+                if (sleepSeconds > 0.0) {
+                    ARCH->sleep(sleepSeconds);
+                }
+                now = ARCH->time();
+            }
+            if (m_stop) {
+                return;
+            }
             m_callback(AudioChunk::data(data, dataSize), m_context);
             if (nextSendTime < now) {
                 nextSendTime = now;
@@ -527,11 +541,11 @@ private:
                     if (pendingOutput.size() < packetBytes) {
                         pendingOutput.resize(packetBytes, 0);
                     }
-                    sendRealtimeChunk(&pendingOutput[0], packetBytes, now);
+                    sendRealtimeChunk(&pendingOutput[0], packetBytes);
                     pendingOutput.clear();
                 }
                 else if (now >= nextSendTime) {
-                    sendRealtimeChunk(&silencePacket[0], silencePacket.size(), now);
+                    sendRealtimeChunk(&silencePacket[0], silencePacket.size());
                 }
 
                 const double sleepSeconds =
@@ -557,9 +571,29 @@ private:
                 bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
                 convertToSharedPcm16(data, framesAvailable, mixFormat, outputFormat,
                                      nextOutputFrame, output, silent);
+                hr = captureClient->ReleaseBuffer(framesAvailable);
+                if (FAILED(hr)) {
+                    LOG((CLOG_ERR "server audio sharing restarting capture: ReleaseBuffer failed 0x%08x", hr));
+                    return;
+                }
+
                 if (!output.empty()) {
-                    const double now = ARCH->time();
                     pendingOutput.insert(pendingOutput.end(), output.begin(), output.end());
+                    const size_t maxPendingBytes = packetBytes * kSharedAudioMaxPendingPackets;
+                    if (pendingOutput.size() > maxPendingBytes) {
+                        const size_t extraBytes = pendingOutput.size() - maxPendingBytes;
+                        const size_t dropBytes =
+                            (extraBytes / packetBytes) * packetBytes;
+                        if (dropBytes > 0) {
+                            pendingOutput.erase(pendingOutput.begin(),
+                                                pendingOutput.begin() + dropBytes);
+                            nextSendTime = ARCH->time();
+                            ++droppedPackets;
+                            if ((droppedPackets % kSharedAudioDropLogInterval) == 1) {
+                                LOG((CLOG_NOTE "server audio sharing dropped buffered audio to stay realtime"));
+                            }
+                        }
+                    }
                     while (pendingOutput.size() >= packetBytes && !m_stop) {
                         const double now = ARCH->time();
                         if (nextSendTime > now + kSharedAudioMaxSendLeadSeconds) {
@@ -572,13 +606,11 @@ private:
                             continue;
                         }
 
-                        sendRealtimeChunk(&pendingOutput[0], packetBytes, now);
+                        sendRealtimeChunk(&pendingOutput[0], packetBytes);
                         pendingOutput.erase(pendingOutput.begin(),
                                             pendingOutput.begin() + packetBytes);
                     }
                 }
-
-                captureClient->ReleaseBuffer(framesAvailable);
 
                 hr = captureClient->GetNextPacketSize(&packetFrames);
                 if (FAILED(hr)) {
@@ -631,7 +663,8 @@ public:
         m_waveOutReset(NULL),
         m_waveOutClose(NULL),
         m_running(false),
-        m_started(false)
+        m_started(false),
+        m_lastQueueProgressTime(0.0)
     {
     }
 
@@ -669,6 +702,7 @@ public:
 
         m_running = true;
         m_started = false;
+        m_lastQueueProgressTime = ARCH->time();
         result = m_waveOutPause(m_waveOut);
         if (result != MMSYSERR_NOERROR) {
             LOG((CLOG_NOTE "client audio playback prebuffer unavailable: waveOutPause failed %u", result));
@@ -686,6 +720,7 @@ public:
         }
 
         cleanupFinished();
+        const double now = ARCH->time();
         if (m_started && m_pending.empty()) {
             MMRESULT result = m_waveOutPause(m_waveOut);
             if (result == MMSYSERR_NOERROR) {
@@ -693,6 +728,12 @@ public:
             }
         }
         if (m_pending.size() >= kMaxPlaybackQueueBuffers) {
+            if (m_lastQueueProgressTime > 0.0 &&
+                now - m_lastQueueProgressTime >= kSharedAudioPlaybackQueueStallSeconds) {
+                LOG((CLOG_NOTE "client audio playback queue stalled; reopening device"));
+                stop();
+                return false;
+            }
             LOG((CLOG_DEBUG2 "client audio playback queue is full; dropping realtime chunk"));
             return true;
         }
@@ -750,6 +791,7 @@ public:
         }
         m_running = false;
         m_started = false;
+        m_lastQueueProgressTime = 0.0;
     }
 
     bool isRunning() const
@@ -794,6 +836,7 @@ private:
 
     void cleanupFinished()
     {
+        bool hadProgress = false;
         std::vector<PendingBuffer>::iterator index = m_pending.begin();
         while (index != m_pending.end()) {
             if ((index->m_header->dwFlags & WHDR_DONE) == 0) {
@@ -803,6 +846,11 @@ private:
 
             destroyPending(*index);
             index = m_pending.erase(index);
+            hadProgress = true;
+        }
+
+        if (hadProgress || m_pending.empty()) {
+            m_lastQueueProgressTime = ARCH->time();
         }
     }
 
@@ -835,6 +883,7 @@ private:
     WaveOutCloseProc m_waveOutClose;
     bool m_running;
     bool m_started;
+    double m_lastQueueProgressTime;
     std::vector<PendingBuffer> m_pending;
 };
 
