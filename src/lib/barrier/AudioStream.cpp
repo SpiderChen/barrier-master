@@ -916,8 +916,10 @@ public:
     Impl() :
         m_queue(NULL),
         m_queueStarted(false),
+        m_queueNeedsPause(false),
         m_running(false),
-        m_queuedBuffers(0)
+        m_queuedBuffers(0),
+        m_lastQueueProgressTime(0.0)
     {
     }
 
@@ -972,8 +974,10 @@ public:
             std::lock_guard<std::mutex> lock(m_mutex);
             m_queue = queue;
             m_queueStarted = false;
+            m_queueNeedsPause = false;
             m_running = true;
             m_queuedBuffers = 0;
+            m_lastQueueProgressTime = ARCH->time();
         }
 
         LOG((CLOG_INFO "client audio playback started: %u Hz, %u channels, %u-bit",
@@ -1000,46 +1004,74 @@ public:
                 return false;
             }
 
+            const double now = ARCH->time();
             if (m_queuedBuffers >= kMaxQueuedBuffers) {
-                LOG((CLOG_NOTE "client audio playback queue is stale; reopening device"));
-                return false;
-            }
-
-            AudioQueueBufferRef buffer = NULL;
-            OSStatus status = AudioQueueAllocateBuffer(
-                m_queue, static_cast<UInt32>(dataSize), &buffer);
-            if (status != noErr || buffer == NULL) {
-                LOG((CLOG_ERR "client audio playback failed: AudioQueueAllocateBuffer failed %i",
-                     static_cast<int>(status)));
-                return false;
-            }
-
-            std::memcpy(buffer->mAudioData, data, dataSize);
-            buffer->mAudioDataByteSize = static_cast<UInt32>(dataSize);
-
-            ++m_queuedBuffers;
-            status = AudioQueueEnqueueBuffer(m_queue, buffer, 0, NULL);
-            if (status != noErr) {
-                --m_queuedBuffers;
-                AudioQueueFreeBuffer(m_queue, buffer);
-                LOG((CLOG_ERR "client audio playback failed: AudioQueueEnqueueBuffer failed %i",
-                     static_cast<int>(status)));
-                return false;
-            }
-
-            if (!m_queueStarted) {
-                status = AudioQueueStart(m_queue, NULL);
-                if (status != noErr) {
-                    LOG((CLOG_ERR "client audio playback failed: AudioQueueStart failed %i",
-                         static_cast<int>(status)));
+                if (m_lastQueueProgressTime > 0.0 &&
+                    now - m_lastQueueProgressTime >= kSharedAudioPlaybackQueueStallSeconds) {
+                    LOG((CLOG_NOTE "client audio playback queue stalled; reopening device"));
                     failedQueue = m_queue;
                     m_queue = NULL;
                     m_queueStarted = false;
+                    m_queueNeedsPause = false;
                     m_running = false;
                     m_queuedBuffers = 0;
+                    m_lastQueueProgressTime = 0.0;
                 }
                 else {
-                    m_queueStarted = true;
+                    LOG((CLOG_DEBUG2 "client audio playback queue is full; dropping realtime chunk"));
+                    return true;
+                }
+            }
+
+            if (failedQueue == NULL) {
+                if (m_queueNeedsPause) {
+                    OSStatus pauseStatus = AudioQueuePause(m_queue);
+                    if (pauseStatus != noErr) {
+                        LOG((CLOG_NOTE "client audio playback prebuffer reset failed: AudioQueuePause failed %i",
+                             static_cast<int>(pauseStatus)));
+                    }
+                    m_queueNeedsPause = false;
+                }
+
+                AudioQueueBufferRef buffer = NULL;
+                OSStatus status = AudioQueueAllocateBuffer(
+                    m_queue, static_cast<UInt32>(dataSize), &buffer);
+                if (status != noErr || buffer == NULL) {
+                    LOG((CLOG_ERR "client audio playback failed: AudioQueueAllocateBuffer failed %i",
+                         static_cast<int>(status)));
+                    return false;
+                }
+
+                std::memcpy(buffer->mAudioData, data, dataSize);
+                buffer->mAudioDataByteSize = static_cast<UInt32>(dataSize);
+
+                ++m_queuedBuffers;
+                status = AudioQueueEnqueueBuffer(m_queue, buffer, 0, NULL);
+                if (status != noErr) {
+                    --m_queuedBuffers;
+                    AudioQueueFreeBuffer(m_queue, buffer);
+                    LOG((CLOG_ERR "client audio playback failed: AudioQueueEnqueueBuffer failed %i",
+                         static_cast<int>(status)));
+                    return false;
+                }
+
+                if (!m_queueStarted && m_queuedBuffers >= kPlaybackPrebufferBuffers) {
+                    status = AudioQueueStart(m_queue, NULL);
+                    if (status != noErr) {
+                        LOG((CLOG_ERR "client audio playback failed: AudioQueueStart failed %i",
+                             static_cast<int>(status)));
+                        failedQueue = m_queue;
+                        m_queue = NULL;
+                        m_queueStarted = false;
+                        m_queueNeedsPause = false;
+                        m_running = false;
+                        m_queuedBuffers = 0;
+                        m_lastQueueProgressTime = 0.0;
+                    }
+                    else {
+                        m_queueStarted = true;
+                        m_queueNeedsPause = false;
+                    }
                 }
             }
         }
@@ -1059,8 +1091,10 @@ public:
             queue = m_queue;
             m_queue = NULL;
             m_queueStarted = false;
+            m_queueNeedsPause = false;
             m_running = false;
             m_queuedBuffers = 0;
+            m_lastQueueProgressTime = 0.0;
         }
 
         if (queue != NULL) {
@@ -1093,17 +1127,26 @@ private:
         if (m_queuedBuffers > 0) {
             --m_queuedBuffers;
         }
+        m_lastQueueProgressTime = ARCH->time();
+
+        if (m_queueStarted && m_queuedBuffers == 0) {
+            m_queueStarted = false;
+            m_queueNeedsPause = true;
+        }
     }
 
 private:
     enum {
-        kMaxQueuedBuffers = 6
+        kPlaybackPrebufferBuffers = 8,
+        kMaxQueuedBuffers = 30
     };
 
     AudioQueueRef m_queue;
     bool m_queueStarted;
+    bool m_queueNeedsPause;
     bool m_running;
     size_t m_queuedBuffers;
+    double m_lastQueueProgressTime;
     mutable std::mutex m_mutex;
 };
 
