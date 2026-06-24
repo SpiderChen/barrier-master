@@ -25,7 +25,9 @@
 #include "platform/synwinhk.h"
 #include "mt/CondVar.h"
 #include "mt/Mutex.h"
+#include <map>
 #include <string>
+#include <vector>
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -183,6 +185,14 @@ private: // HACK
     // update screen size cache
     void                updateScreenShape();
 
+    // update physical monitor geometry cache
+    void                updateMonitorRects();
+    static BOOL CALLBACK enumMonitorCallback(HMONITOR, HDC, LPRECT, LPARAM);
+
+    // map physical monitor outer edges to Barrier's virtual desktop edges
+    bool                projectToConfiguredMonitorEdge(SInt32& x, SInt32& y) const;
+    bool                hasMonitorAt(SInt32 x, SInt32 y) const;
+
     // fix timer callback
     void                handleFixes(const Event&, void*);
 
@@ -241,6 +251,7 @@ private:
     typedef std::vector<UInt32> HotKeyIDList;
     typedef std::map<HotKeyItem, UInt32> HotKeyToIDMap;
     typedef std::vector<KeyButton> PrimaryKeyDownList;
+    typedef std::vector<RECT> MonitorRects;
 
     static HINSTANCE    s_windowInstance;
 
@@ -263,6 +274,12 @@ private:
 
     // true if system appears to have multiple monitors
     bool                m_multimon;
+
+    // sides of the primary screen that have configured neighbors
+    UInt32              m_activeSides;
+
+    // physical monitor rectangles in virtual desktop coordinates
+    MonitorRects        m_monitorRects;
 
     // last mouse position
     SInt32                m_xCursor, m_yCursor;

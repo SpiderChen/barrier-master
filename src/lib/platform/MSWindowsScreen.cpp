@@ -28,6 +28,7 @@
 #include "platform/MSWindowsScreenSaver.h"
 #include "barrier/Clipboard.h"
 #include "barrier/KeyMap.h"
+#include "barrier/protocol_types.h"
 #include "barrier/XScreen.h"
 #include "barrier/App.h"
 #include "barrier/ArgsBase.h"
@@ -101,6 +102,7 @@ MSWindowsScreen::MSWindowsScreen(
     m_w(0), m_h(0),
     m_xCenter(0), m_yCenter(0),
     m_multimon(false),
+    m_activeSides(0),
     m_xCursor(0), m_yCursor(0),
     m_sequenceNumber(0),
     m_mark(0),
@@ -519,6 +521,7 @@ MSWindowsScreen::reconfigure(UInt32 activeSides)
 {
     assert(m_isPrimary);
 
+    m_activeSides = activeSides;
     LOG((CLOG_DEBUG "active sides: %x", activeSides));
     m_hook.setSides(activeSides);
 }
@@ -1343,11 +1346,18 @@ MSWindowsScreen::onMouseMove(SInt32 mx, SInt32 my)
     saveMousePosition(mx, my);
 
     if (m_isOnScreen) {
+        SInt32 xSend = m_xCursor;
+        SInt32 ySend = m_yCursor;
+        if (projectToConfiguredMonitorEdge(xSend, ySend)) {
+            LOG((CLOG_DEBUG2
+                "projected physical monitor edge from %d,%d to %d,%d",
+                m_xCursor, m_yCursor, xSend, ySend));
+        }
 
         // motion on primary screen
         sendEvent(
             m_events->forIPrimaryScreen().motionOnPrimary(),
-            MotionInfo::alloc(m_xCursor, m_yCursor));
+            MotionInfo::alloc(xSend, ySend));
 
         if (m_buttons[kButtonLeft] == true && m_draggingStarted == false) {
             m_draggingStarted = true;
@@ -1576,8 +1586,99 @@ MSWindowsScreen::updateScreenShape()
     m_multimon = (m_w != GetSystemMetrics(SM_CXSCREEN) ||
                   m_h != GetSystemMetrics(SM_CYSCREEN));
 
+    updateMonitorRects();
+
     // tell the desks
     m_desks->setShape(m_x, m_y, m_w, m_h, m_xCenter, m_yCenter, m_multimon);
+}
+
+BOOL CALLBACK
+MSWindowsScreen::enumMonitorCallback(HMONITOR monitor, HDC, LPRECT, LPARAM data)
+{
+    MonitorRects* rects = reinterpret_cast<MonitorRects*>(data);
+    MONITORINFO info;
+    info.cbSize = sizeof(info);
+
+    if (GetMonitorInfo(monitor, &info) != 0) {
+        rects->push_back(info.rcMonitor);
+    }
+
+    return TRUE;
+}
+
+void
+MSWindowsScreen::updateMonitorRects()
+{
+    m_monitorRects.clear();
+    EnumDisplayMonitors(NULL, NULL, enumMonitorCallback,
+        reinterpret_cast<LPARAM>(&m_monitorRects));
+}
+
+bool
+MSWindowsScreen::hasMonitorAt(SInt32 x, SInt32 y) const
+{
+    for (MonitorRects::const_iterator i = m_monitorRects.begin();
+            i != m_monitorRects.end(); ++i) {
+        if (x >= i->left && x < i->right &&
+            y >= i->top && y < i->bottom) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+MSWindowsScreen::projectToConfiguredMonitorEdge(SInt32& x, SInt32& y) const
+{
+    if (!m_multimon || m_activeSides == 0 || m_monitorRects.size() <= 1) {
+        return false;
+    }
+
+    const RECT* monitor = NULL;
+    for (MonitorRects::const_iterator i = m_monitorRects.begin();
+            i != m_monitorRects.end(); ++i) {
+        if (x >= i->left && x < i->right &&
+            y >= i->top && y < i->bottom) {
+            monitor = &(*i);
+            break;
+        }
+    }
+
+    if (monitor == NULL) {
+        return false;
+    }
+
+    SInt32 projectedX = x;
+    SInt32 projectedY = y;
+
+    if ((m_activeSides & kLeftMask) != 0 &&
+            x <= monitor->left &&
+            !hasMonitorAt(monitor->left - 1, y)) {
+        projectedX = m_x;
+    }
+    else if ((m_activeSides & kRightMask) != 0 &&
+            x >= monitor->right - 1 &&
+            !hasMonitorAt(monitor->right, y)) {
+        projectedX = m_x + m_w - 1;
+    }
+
+    if ((m_activeSides & kTopMask) != 0 &&
+            y <= monitor->top &&
+            !hasMonitorAt(x, monitor->top - 1)) {
+        projectedY = m_y;
+    }
+    else if ((m_activeSides & kBottomMask) != 0 &&
+            y >= monitor->bottom - 1 &&
+            !hasMonitorAt(x, monitor->bottom)) {
+        projectedY = m_y + m_h - 1;
+    }
+
+    const bool projected = (projectedX != x || projectedY != y);
+    x = projectedX;
+    y = projectedY;
+
+    return projected;
 }
 
 void
